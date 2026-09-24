@@ -61,3 +61,22 @@ python -c 'from gpu4pyscf_gau.hessian_memory import backend_diagnostics; import 
 检查 `effective_backend` 是否为 `cutensor`，且两个导入均成功。此已审计版本不支持 `CONTRACT_ENGINE=cutensor`；库可加载且未设置强制后端时会自动选用。应按上游配对固定 CuPy/cuTENSOR 版本，先在隔离环境完成数值验证，避免直接升级正在使用的 GPU 环境。CUDA 12.x 可使用相应的 `cutensor-cu12` 包，并不要求升级 CUDA 13。
 
 具体兼容来源、隔离安装实验和大体系精度边界见[Hessian 精度与 cuTENSOR 复核](hessian-accuracy-followup.md)。
+
+### 安装方式与2026-09-24节点验证
+
+H100实验在独立目录通过 `python -m pip install --no-deps --target OVERLAY cutensor-cu12==2.2.0` 安装，仅向测试进程增加overlay的Python路径和动态库路径。原GPU环境未覆盖。
+
+随后在用户指定的4444节点（4090）中，将同一包直接安装到既有 `gpu4pyscf_upstream` conda环境：
+
+```bash
+conda activate gpu4pyscf_upstream
+python -m pip install --no-deps cutensor-cu12==2.2.0
+```
+
+该环境实测GPU4PySCF 1.8.1、PySCF 2.8.0、CuPy 13.6.0、CUDA runtime 12.9。`--no-deps`保留其余依赖版本。包位于该环境 `lib/python3.10/site-packages/cutensor/`，必须使其中的 `lib/libcutensor.so.2` 可被动态加载。
+
+本节点增加了环境内的 `lib/libcutensor.so.2` 相对符号链接，指向上述包内动态库。因此旧worker配置中已经包含的环境 `lib` 路径也能找到cuTENSOR，无需改变数值配置。另在该环境 `etc/conda/activate.d/gpu-gau-cuda.sh` 配置CUDA路径、动态库路径及该构建原先必需的cuSOLVER预加载；对应deactivate钩子恢复激活前的变量。成功测试了conda激活/退出及旧worker环境两种启动方式，实际后端均为cuTENSOR。
+
+对水分子B3LYP-D3BJ/def2-SVP的完整二阶导数请求，对照强制CuPy后端，能量、梯度、Hessian最大差分别为 `1.279e-13 Eh`、`1.296e-11 Eh/Bohr`、`1.180e-11 Eh/Bohr²`；双精度带alpha/beta/out的张量收缩检查通过。此小体系验证不等于4090大型Hessian显存测试，也不代表安装动作已经写入平台基础镜像。
+
+该节点的安装记录、后端探测、计算日志和对照结果存放在Git忽略的 `runs/cutensor_port4444_20260924/`。不要显式设置 `CONTRACT_ENGINE=cutensor`；此已审计版本通过成功导入库自动选用cuTENSOR。
