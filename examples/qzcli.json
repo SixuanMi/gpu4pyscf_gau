@@ -1,0 +1,15 @@
+{
+  "mode": "cli",
+  "qzcli": "qzcli",
+  "name": "gpu-gau-example",
+  "workspace": "YOUR_WORKSPACE_ID",
+  "project": "YOUR_PROJECT_ID",
+  "compute_group": "YOUR_COMPUTE_GROUP_ID",
+  "spec": "YOUR_SINGLE_GPU_SPEC_ID",
+  "image": "YOUR_GPU4PYSCF_IMAGE",
+  "image_type": "SOURCE_PRIVATE",
+  "python": "/path/in/container/to/python",
+  "repository": "/shared/path/gpu4pyscf_gau",
+  "shm_gib": 64,
+  "priority": 6
+}

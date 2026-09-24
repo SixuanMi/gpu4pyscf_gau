@@ -1,0 +1,4 @@
+[
+  {"name": "water_sp", "task": "sp", "xyz": "water.xyz", "charge": 0, "multiplicity": 1},
+  {"name": "water_opt", "task": "opt", "xyz": "water.xyz", "charge": 0, "multiplicity": 1}
+]

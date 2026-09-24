@@ -1,0 +1,15 @@
+{
+  "mode": "console",
+  "name": "gpu-gau-console-example",
+  "workspace": "YOUR_WORKSPACE_ID",
+  "project": "YOUR_PROJECT_ID",
+  "compute_group": "YOUR_COMPUTE_GROUP_ID",
+  "spec": "YOUR_SINGLE_GPU_SPEC_ID",
+  "image": "YOUR_GPU4PYSCF_IMAGE",
+  "python": "/path/in/container/to/python",
+  "repository": "/shared/path/gpu4pyscf_gau",
+  "resource_template": "resource-template.json",
+  "console_url": "https://qz.sii.edu.cn",
+  "shm_gib": 64,
+  "priority": 6
+}

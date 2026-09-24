@@ -1,0 +1,14 @@
+{
+  "framework_config": {
+    "cpu": 20,
+    "gpu_count": 1,
+    "mem_gi": 200,
+    "instance_spec_price_info": {
+      "cpu_count": 20,
+      "cpu_info": {"cpu_type": ""},
+      "gpu_count": 1,
+      "gpu_info": {"gpu_type": "YOUR_GPU_TYPE"},
+      "memory_size_gib": 200
+    }
+  }
+}
