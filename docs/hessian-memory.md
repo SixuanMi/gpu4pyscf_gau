@@ -2,7 +2,7 @@
 
 此功能是显式启用的、针对已审计GPU4PySCF构建的兼容补丁，默认关闭。它处理气相DF Hessian的J/K导数分块和CPHF轨道响应批次，不把上游名称中带lowmem的其他功能当作Hessian开关。
 
-这是实验功能。显存与分块一致性测试、独立梯度差分测试的结果须分别看待；62原子体系的差分验收仍有未解决偏差，详见[验证记录](hessian-memory-validation.md)。
+这是实验功能。显存与分块一致性测试、独立GPU梯度差分测试的结果须分别看待。后续对照已定位原先62原子的主要差分偏差来自DF梯度的度量矩阵运算及响应精度；完整未分块Hessian也有该偏差。修正方式见[GPU内部导数一致性配置](gradient-hessian-consistency.md)，分层验收数据见[精度复核](hessian-accuracy-followup.md)。
 
 ## 启用与关闭
 

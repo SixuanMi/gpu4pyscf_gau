@@ -16,7 +16,8 @@ DEFAULT = {
             'atom_grid': [99, 590], 'pruning': 'nwchem', 'conv_tol': 1e-10,
             'conv_tol_grad': 1e-7, 'direct_scf_tol': 1e-14, 'max_cycle': 100,
             'threads': 1, 'memory_mb': 32000, 'reuse_guess': True,
-            'reset_at_initial_geometry': True, 'hessian_memory': {'policy':'off'}},
+            'reset_at_initial_geometry': True, 'hessian_memory': {'policy':'off'},
+            'df_gradient_metric': 'original', 'conv_tol_cpscf': None, 'cphf_grid': 'default'},
     'routes': {'sp': '', 'opt': 'Opt=(NoMicro,Redundant,MaxCycles=100)',
                'tsopt': 'Opt=(TS,CalcFC,NoEigenTest,NoMicro,Redundant,MaxCycles=100)',
                'irc': 'IRC=(CalcFC,HPC,MaxPoints=10,StepSize=10)',
@@ -42,6 +43,18 @@ def load_config(filename):
     gpu['hessian_memory'] = validate(gpu['hessian_memory'])
     if gpu['hessian_memory']['policy'] != 'off' and not gpu['density_fit']:
         raise ValueError('Conservative Hessian memory policy requires density fitting')
+    from .gradient_metric import validate as validate_gradient_metric
+    validate_gradient_metric(gpu['df_gradient_metric'])
+    if gpu['df_gradient_metric'] == 'solve' and not gpu['density_fit']:
+        raise ValueError('Stable DF gradient metric requires density fitting')
+    if gpu['cphf_grid'] not in ('default', 'scf'):
+        raise ValueError('gpu.cphf_grid must be default or scf')
+    if gpu['cphf_grid'] == 'scf' and gpu['method'].lower() == 'hf':
+        raise ValueError('SCF CPHF grid selection requires DFT')
+    if gpu['conv_tol_cpscf'] is not None:
+        tol = gpu['conv_tol_cpscf']
+        if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not math.isfinite(tol) or tol <= 0:
+            raise ValueError('gpu.conv_tol_cpscf must be null or a positive finite number')
     if gpu['with_solvent']:
         raise ValueError('Solvent is not implemented by this External bridge')
     if gpu['pruning'] not in ('nwchem', 'none'):

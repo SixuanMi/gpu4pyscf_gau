@@ -15,6 +15,7 @@ def main():
     p.add_argument('--steps',type=float,nargs='+',default=[.0005,.00025])
     p.add_argument('--conv-tol',type=float)
     p.add_argument('--conv-tol-grad',type=float)
+    p.add_argument('--df-gradient-metric',choices=['original','solve'])
     args = p.parse_args()
     import numpy as np
     from gpu4pyscf_gau.worker import Engine
@@ -23,6 +24,7 @@ def main():
     cfg = json.loads((args.case/'config.json').read_text())
     if args.conv_tol is not None:cfg['conv_tol'] = args.conv_tol
     if args.conv_tol_grad is not None:cfg['conv_tol_grad'] = args.conv_tol_grad
+    if args.df_gradient_metric is not None:cfg['df_gradient_metric'] = args.df_gradient_metric
     if any(not np.isfinite(step) or step <= 0 for step in args.steps):
         raise ValueError('Finite difference steps must be finite and positive')
     req = json.loads((args.case/'request.json').read_text());req['deriv']=1

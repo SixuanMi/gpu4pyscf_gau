@@ -89,3 +89,7 @@ python tools/hessian_finite_difference.py --case RUN_ROOT/g062_conservative --ou
 - `runs/hessian_grid_cutoff_20260924/`：单独关闭SCF密度网格筛除的差分诊断。
 
 个人资源规格、路径配置及大体积日志未提交到 Git。
+
+## 后续：完整未修改基线与独立精度复核
+
+本页保留初次实验记录。后续通过隔离配置 cuTENSOR，已能够计算大体系未分块的原库 Hessian，并对同一组轨道直接比较分块开关。新增证据及原始差分记录的适用范围见[精度复核](hessian-accuracy-followup.md)。初次超阈值差分只针对62原子；不能把78原子当时的分块版本比较描述为已做过独立差分。

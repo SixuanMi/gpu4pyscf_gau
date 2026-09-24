@@ -123,9 +123,18 @@ class Engine:
                 grad.auxbasis_response = True
             if cfg['method'].lower() != 'hf':
                 grad.grid_response = True
+            from .gradient_metric import gradient_metric_scope
+            metric_mode = cfg.get('df_gradient_metric', 'original')
+            if metric_mode == 'solve' and (not cfg.get('density_fit') or mol.spin):
+                raise ValueError('Stable DF gradient metric currently requires restricted density fitting')
+            metric_report = {}
             t = time.perf_counter()
-            gradient = self.array(grad.kernel())
-            cp.cuda.get_current_stream().synchronize()
+            try:
+                with gradient_metric_scope(metric_mode, metric_report):
+                    gradient = self.array(grad.kernel())
+                    cp.cuda.get_current_stream().synchronize()
+            finally:
+                (directory/'gradient_metric.json').write_text(json.dumps(metric_report,indent=2)+'\n')
             grad_seconds = time.perf_counter() - t
             if gradient.shape != (mol.natm, 3) or not np.isfinite(gradient).all():
                 raise RuntimeError('Invalid gradient; result rejected')
@@ -139,6 +148,15 @@ class Engine:
             memory_report = dict(backend=backend_diagnostics())
             if (cfg.get('hessian_memory') or {}).get('policy', 'off') != 'off' and not cfg.get('density_fit'):
                 raise ValueError('Conservative Hessian memory policy requires density fitting')
+            if cfg.get('conv_tol_cpscf') is not None:
+                mf.conv_tol_cpscf = cfg['conv_tol_cpscf']
+            if cfg.get('cphf_grid', 'default') == 'scf':
+                if cfg['method'].lower() == 'hf':
+                    raise ValueError('SCF CPHF grid selection requires DFT')
+                mf.cphf_grids = mf.grids
+            memory_report['response_accuracy'] = dict(
+                conv_tol_cpscf=mf.conv_tol_cpscf,
+                cphf_grid=cfg.get('cphf_grid', 'default'))
             hdriver = mf.Hessian()
             if cfg.get('density_fit'):
                 hdriver.auxbasis_response = 2

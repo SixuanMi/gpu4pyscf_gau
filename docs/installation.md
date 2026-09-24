@@ -47,3 +47,17 @@ formchk默认启用。将其设为null可跳过格式化与final.xyz导出，适
 以上是可选示意，路径和库名应以自己的环境为准，不要照抄不存在的库。Gaussian子进程会移除LD_PRELOAD；轻量External客户端也移除它，并使用`python -S`避免每次回调载入GPU库。Gaussian额外环境可用`gaussian.environment`指定。
 
 提交节点上可运行`check-config`，它不导入CUDA，也不证明GPU计算可用。数值验证需在分配到GPU的计算节点完成。
+
+## cuTENSOR 后端检查
+
+cuTENSOR 是推荐的可选依赖。缺失时 GPU4PySCF 可能回退到 CuPy；此回退在大型 Hessian 收缩中可能额外分配完整中间结果，即使传入 `out` 也不能保证原地计算。不能把“已安装 GPU4PySCF”当成 cuTENSOR 已生效。
+
+在实际 worker 使用的 Python 和动态库环境下检查：
+
+```bash
+python -c 'from gpu4pyscf_gau.hessian_memory import backend_diagnostics; import json; print(json.dumps(backend_diagnostics(), indent=2))'
+```
+
+检查 `effective_backend` 是否为 `cutensor`，且两个导入均成功。此已审计版本不支持 `CONTRACT_ENGINE=cutensor`；库可加载且未设置强制后端时会自动选用。应按上游配对固定 CuPy/cuTENSOR 版本，先在隔离环境完成数值验证，避免直接升级正在使用的 GPU 环境。CUDA 12.x 可使用相应的 `cutensor-cu12` 包，并不要求升级 CUDA 13。
+
+具体兼容来源、隔离安装实验和大体系精度边界见[Hessian 精度与 cuTENSOR 复核](hessian-accuracy-followup.md)。
