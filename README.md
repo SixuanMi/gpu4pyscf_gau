@@ -10,16 +10,18 @@ Gaussian每次给出结构，常驻GPU worker完成SCF并按需返回梯度/Hess
 
 ```bash
 python -m pip install -e .
-cp examples/config.json config.local.json
+cp examples/config.yaml config.local.yaml
 ```
 
-编辑`config.local.json`中的三个Gaussian路径：`executable`为g16可执行文件，`exedir`为Gaussian程序目录，`formchk`为格式化检查点工具。已有g16配置在PATH中时，也可以使用相应命令名。CUDA环境需由用户预先配置，详见[安装说明](docs/installation.md)。
+YAML支持注释，旧JSON配置仍可通过`--config`读取。Hessian响应默认使用SCF主网格和`conv_tol_cpscf: 1e-10`；示例注释写明原默认值及恢复方法。
+
+编辑`config.local.yaml`中的三个Gaussian路径：`executable`为g16可执行文件，`exedir`为Gaussian程序目录，`formchk`为格式化检查点工具。已有g16配置在PATH中时，也可以使用相应命令名。CUDA环境需由用户预先配置，详见[安装说明](docs/installation.md)。
 
 ```bash
-gpu-gau check-config --config config.local.json
-gpu-gau run --config config.local.json --xyz examples/water.xyz \
+gpu-gau check-config --config config.local.yaml
+gpu-gau run --config config.local.yaml --xyz examples/water.xyz \
   --task sp --charge 0 --multiplicity 1 --output runs/water-sp
-gpu-gau run --config config.local.json --xyz examples/water.xyz \
+gpu-gau run --config config.local.yaml --xyz examples/water.xyz \
   --task opt --charge 0 --multiplicity 1 --output runs/water-opt
 ```
 
@@ -35,7 +37,7 @@ gpu-gau run --config config.local.json --xyz examples/water.xyz \
 cp examples/qzcli.json qzcli.local.json
 # 先编辑个人平台配置；路径须在计算容器内可见。
 gpu-gau qz-submit --platform qzcli.local.json -- \
-  run --config /shared/project/config.local.json \
+  run --config /shared/project/config.local.yaml \
   --xyz /shared/project/examples/water.xyz \
   --task sp --charge 0 --multiplicity 1 --output /shared/project/runs/water-sp
 ```

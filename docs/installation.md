@@ -3,7 +3,7 @@
 ## 需要准备什么
 
 - Linux计算节点、NVIDIA GPU及驱动；Unix domain socket需要节点本地可用。
-- Python 3.10以上。接口本身只用标准库；worker需要numpy、PySCF、GPU4PySCF、CuPy和B3LYP/D3BJ所需依赖。
+- Python 3.10以上。接口的YAML配置读取依赖PyYAML>=6.0（随本项目安装）；worker需要numpy、PySCF、GPU4PySCF、CuPy和B3LYP/D3BJ所需依赖。
 - 用户自行安装且有权使用的Gaussian 16，包含g16及formchk。
 
 历史验证组合是GPU4PySCF 1.8.1、PySCF 2.8.0、CuPy 13.6.0、Gaussian 16 B.01。它是复现参考，不代表其他版本自动兼容。CUDA、驱动、CuPy wheel和cuTENSOR的匹配由用户环境负责；本项目不通过pip自动升级它们。

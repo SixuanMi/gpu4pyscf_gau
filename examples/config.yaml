@@ -1,0 +1,48 @@
+# Copy to config.local.yaml and edit the Gaussian paths.
+# JSON configuration files remain supported.
+gaussian:
+  executable: /path/to/g16/g16
+  exedir: /path/to/g16
+  memory: 32GB
+  threads: 1
+  formchk: /path/to/g16/formchk
+
+runtime:
+  scratch_dir: null
+  timeout_seconds: 43200
+  startup_timeout_seconds: 180
+  worker_environment: {}
+
+gpu:
+  method: b3lyp
+  dispersion: d3bj
+  basis: def2-svp
+  density_fit: true
+  auxbasis: def2-universal-jkfit
+  with_solvent: false
+  atom_grid: [99, 590]
+  pruning: nwchem
+  conv_tol: 1e-10
+  conv_tol_grad: 1e-7
+  direct_scf_tol: 1e-14
+  max_cycle: 100
+
+  # Hessian响应收敛阈值。新默认1e-10；原上游默认1e-6。
+  # 设置null保留所安装上游版本的默认值；设置1e-6明确恢复原测试阈值。
+  conv_tol_cpscf: 1e-10
+  # Hessian的CPHF响应积分网格。新默认scf：复用SCF主网格mf.grids。
+  # 原默认default：独立SG1辅助网格，atom_grid=(50,194)，sg1_prune裁剪。
+  # 设为default恢复原辅助网格；HF不使用DFT网格，HF请设default。
+  cphf_grid: scf
+
+  # Restricted DF梯度稳定求解补丁需显式启用solve，并通过源码兼容检查。
+  # 当前默认original；solve尚未开放给开壳层。
+  df_gradient_metric: original
+  # 显存分块是独立选项，默认关闭；启用时改为conservative。
+  # YAML中的off需加引号，避免被YAML 1.1解释成布尔值。
+  hessian_memory:
+    policy: "off"
+  threads: 1
+  memory_mb: 32000
+  reuse_guess: true
+  reset_at_initial_geometry: true

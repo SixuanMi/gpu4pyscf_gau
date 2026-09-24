@@ -25,11 +25,39 @@ H100 复核定位出两个需要分开处理的问题：原 DF 梯度显式构�
 最后一项是独立的显存策略；有足够显存时可使用 `off`。装好cuTENSOR后，本次62/78原子的未分块原库也能完整计算。精度修正不依赖开启显存分块。
 
 - `df_gradient_metric` 默认 `original`，新选项 `solve` 显式启用。它只作用于请求阶数1/2的梯度，不增加SP的导数计算。
-- `conv_tol_cpscf` 默认 `null`，保留上游默认阈值；设为正数时只在Hessian计算前传给 `mf.conv_tol_cpscf`。它是上游的输入控制值，上游可能按响应批次规模缩放求解停止准则。
-- `cphf_grid` 默认 `default`，保留上游辅助响应网格；`scf` 让 `mf.cphf_grids=mf.grids`，与SCF主网格匹配。仅对DFT有效，不改变已有SCF网格本身。
+- `conv_tol_cpscf` 新默认 `1e-10`（原接口默认null、受测上游实际默认1e-6）；显式设为null保留所安装上游默认阈值。正数只在Hessian计算前传给 `mf.conv_tol_cpscf`。它是上游的输入控制值，上游可能按响应批次规模缩放求解停止准则。
+- `cphf_grid` 新默认 `scf`（原默认default），显式设为default可恢复上游辅助响应网格；`scf` 让 `mf.cphf_grids=mf.grids`，与SCF主网格匹配。仅对DFT有效，不改变已有SCF网格本身。
 - 不应只打开 `solve` 就假设所有方向都通过：62原子的Ni坐标和最负曲率方向还需要上述响应精度设置。
 
-这些选项均保持原默认行为，未自动写入个人生产配置。科学方法、基组、辅助基组和响应项保持不变；响应网格与迭代精度的提高会增加Hessian耗时，比较速度时也需固定这组设置。
+按用户要求，接口缺省响应配置现为SCF主网格和1e-10；个人配置中已经显式指定的值仍优先，旧JSON也继续支持。梯度求解补丁及显存策略的默认行为不变。科学方法、基组、辅助基组和响应项保持不变；响应网格与迭代精度的提高会增加Hessian耗时，比较速度时也需固定这组设置。
+
+## CPHF网格切换究竟改了什么
+
+切换主网格是对GPU4PySCF现有对象属性的赋值，不是重写响应算法：
+
+```python
+# SCF已完成，mf.grids是本次SCF实际使用的网格对象。
+mf.conv_tol_cpscf = 1e-10
+mf.cphf_grids = mf.grids
+hdriver = mf.Hessian()
+# DF、网格响应等原有设置照常保留，再调用hdriver.kernel()。
+```
+
+核心网格切换仅为 `mf.cphf_grids = mf.grids`。它让CPHF复用同一个主网格对象（含坐标、权重、裁剪），而不仅是复制名义上的径向/角向点数。本项目 `cphf_grid` 是接口配置键；上游实际属性名为复数 `cphf_grids`。已审计版本默认在 `gpu4pyscf/dft/rks.py` 创建SG1辅助网格，名义 `atom_grid=(50,194)`、`prune=sg1_prune`；本次主网格为 `(99,590)`、nwchem裁剪。
+
+若只收紧阈值并保留默认辅助网格，配置为：
+
+```json
+{
+  "gpu": {
+    "df_gradient_metric": "solve",
+    "conv_tol_cpscf": 1e-10,
+    "cphf_grid": "default"
+  }
+}
+```
+
+此时worker只执行 `mf.conv_tol_cpscf = 1e-10`，不赋值 `mf.cphf_grids`。两项控制彼此独立；收紧迭代阈值并不能消除辅助积分网格带来的误差，也不能保证每个方向相对梯度差分的总误差单调下降。保持SCF/梯度本身的网格不变，切换只在二阶导数请求中执行。
 
 ## 修正在哪里
 

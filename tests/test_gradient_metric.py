@@ -19,8 +19,8 @@ class GradientMetricTests(unittest.TestCase):
             path.write_text('{}')
             config = load_config(path)['gpu']
             self.assertEqual(config['df_gradient_metric'], 'original')
-            self.assertIsNone(config['conv_tol_cpscf'])
-            self.assertEqual(config['cphf_grid'], 'default')
+            self.assertEqual(config['conv_tol_cpscf'], 1e-10)
+            self.assertEqual(config['cphf_grid'], 'scf')
             valid = dict(df_gradient_metric='solve', conv_tol_cpscf=1e-10,
                          cphf_grid='scf')
             path.write_text(json.dumps({'gpu': valid}))

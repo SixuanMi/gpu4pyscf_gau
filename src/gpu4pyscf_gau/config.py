@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 
 DEFAULT = {
@@ -17,7 +18,7 @@ DEFAULT = {
             'conv_tol_grad': 1e-7, 'direct_scf_tol': 1e-14, 'max_cycle': 100,
             'threads': 1, 'memory_mb': 32000, 'reuse_guess': True,
             'reset_at_initial_geometry': True, 'hessian_memory': {'policy':'off'},
-            'df_gradient_metric': 'original', 'conv_tol_cpscf': None, 'cphf_grid': 'default'},
+            'df_gradient_metric': 'original', 'conv_tol_cpscf': 1e-10, 'cphf_grid': 'scf'},
     'routes': {'sp': '', 'opt': 'Opt=(NoMicro,Redundant,MaxCycles=100)',
                'tsopt': 'Opt=(TS,CalcFC,NoEigenTest,NoMicro,Redundant,MaxCycles=100)',
                'irc': 'IRC=(CalcFC,HPC,MaxPoints=10,StepSize=10)',
@@ -25,11 +26,33 @@ DEFAULT = {
 }
 
 
+def read_configuration(filename):
+    """Read JSON or safe YAML, including scientific literals such as 1e-10."""
+    path = Path(filename)
+    text = path.read_text()
+    if path.suffix.lower() not in ('.yaml', '.yml'):
+        return json.loads(text)
+    import yaml
+
+    class ConfigLoader(yaml.SafeLoader):
+        pass
+
+    # PyYAML's YAML 1.1 resolver otherwise reads bare 1e-10 as a string.
+    ConfigLoader.add_implicit_resolver(
+        'tag:yaml.org,2002:float',
+        re.compile(r'^[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[eE][-+]?[0-9]+$'),
+        list('-+0123456789.'))
+    try:
+        return yaml.load(text, Loader=ConfigLoader)
+    except yaml.YAMLError as exc:
+        raise ValueError(f'Invalid YAML configuration: {exc}') from exc
+
+
 def load_config(filename):
     filename = Path(filename).resolve()
-    custom = json.loads(filename.read_text())
+    custom = read_configuration(filename)
     if not isinstance(custom, dict):
-        raise ValueError('Configuration must be a JSON object')
+        raise ValueError('Configuration must be a mapping (YAML or JSON object)')
     result = copy.deepcopy(DEFAULT)
     for section, values in custom.items():
         if section not in result or not isinstance(values, dict):
@@ -39,6 +62,9 @@ def load_config(filename):
                 raise ValueError(f'Unknown configuration key: {section}.{key}')
             result[section][key] = value
     gpu = result['gpu']
+    # HF has no DFT integration grid. Preserve existing HF configs that omit it.
+    if gpu['method'].lower() == 'hf' and 'cphf_grid' not in custom.get('gpu', {}):
+        gpu['cphf_grid'] = 'default'
     from .hessian_memory import validate
     gpu['hessian_memory'] = validate(gpu['hessian_memory'])
     if gpu['hessian_memory']['policy'] != 'off' and not gpu['density_fit']:

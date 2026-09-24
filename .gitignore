@@ -9,6 +9,8 @@ dist/
 .env
 .qzcli/
 *.local.json
+*.local.yaml
+*.local.yml
 runs/
 outputs/
 scratch/

@@ -18,12 +18,14 @@ Gaussian通过External协议发送原子序数、Bohr坐标、电荷、多重度
 | atom_grid / pruning | [99,590] / nwchem | 数值积分网格 |
 | conv_tol | 1e-10 | SCF能量收敛阈值 |
 | conv_tol_grad | 1e-7 | SCF轨道梯度阈值，不是核梯度开关 |
+| conv_tol_cpscf | 1e-10 | Hessian响应阈值；原上游默认1e-6，null可保留上游默认 |
+| cphf_grid | scf | Hessian响应复用SCF主网格；default恢复原SG1辅助网格 |
 | direct_scf_tol | 1e-14 | 积分筛选阈值 |
 | max_cycle | 100 | SCF最大循环，不是Gaussian几何步数 |
 | threads / memory_mb | 1 / 32000 | worker线程数/CPU内存预算 |
 | reuse_guess | true | 优化步间复用成功密度 |
 
-完整可修改键见`examples/config.json`及`config.py`。未知键会报错，避免把拼错的参数当作已生效。DF梯度响应和DFT网格响应启用；Hessian沿用历史实现，没有加入新显存补丁。
+完整可修改键见`examples/config.yaml`及`config.py`。未知键会报错，避免把拼错的参数当作已生效。DF梯度响应和DFT网格响应启用；Hessian显存分块是单独的显式选项，默认关闭。YAML中的科学计数法（如1e-10）按浮点数读取，JSON兼容保留。响应网格和阈值仅用于Hessian，不额外给SP/普通OPT计算二阶导数。
 
 ## Gaussian几何设置
 
@@ -47,16 +49,16 @@ Gaussian通过External协议发送原子序数、Bohr坐标、电荷、多重度
 ## 单点、优化与TS/IRC
 
 ```bash
-gpu-gau run --config config.local.json --xyz molecule.xyz --task sp --charge 0 --multiplicity 1 --output runs/sp
-gpu-gau run --config config.local.json --xyz molecule.xyz --task opt --charge 0 --multiplicity 1 --output runs/opt
-gpu-gau run --config config.local.json --xyz ts_guess.xyz --task tsopt --charge 0 --multiplicity 1 --output runs/tsopt
+gpu-gau run --config config.local.yaml --xyz molecule.xyz --task sp --charge 0 --multiplicity 1 --output runs/sp
+gpu-gau run --config config.local.yaml --xyz molecule.xyz --task opt --charge 0 --multiplicity 1 --output runs/opt
+gpu-gau run --config config.local.yaml --xyz ts_guess.xyz --task tsopt --charge 0 --multiplicity 1 --output runs/tsopt
 ```
 
 TSOPT成功后，先对`runs/tsopt/tsopt/final.xyz`做独立freq，确认存在合适的单虚频且振动模式符合目标反应，再将这一结构作为IRC输入：
 
 ```bash
-gpu-gau run --config config.local.json --xyz runs/tsopt/tsopt/final.xyz --task freq --charge 0 --multiplicity 1 --output runs/ts-freq
-gpu-gau run --config config.local.json --xyz runs/tsopt/tsopt/final.xyz --task irc --charge 0 --multiplicity 1 --output runs/irc
+gpu-gau run --config config.local.yaml --xyz runs/tsopt/tsopt/final.xyz --task freq --charge 0 --multiplicity 1 --output runs/ts-freq
+gpu-gau run --config config.local.yaml --xyz runs/tsopt/tsopt/final.xyz --task irc --charge 0 --multiplicity 1 --output runs/irc
 ```
 
 这些步骤不自动串联，也不自动证明TS或反应连通性。频率中的IR/Raman强度不可用，见限制文档。大体系的TSOPT/freq/IRC可能在Hessian处失败。
@@ -64,7 +66,7 @@ gpu-gau run --config config.local.json --xyz runs/tsopt/tsopt/final.xyz --task i
 ## 批量与热启动
 
 ```bash
-gpu-gau batch --config config.local.json --manifest examples/batch.json --output runs/batch
+gpu-gau batch --config config.local.yaml --manifest examples/batch.json --output runs/batch
 ```
 
 manifest是独立任务列表。它们串行共享常驻worker、CUDA启动成本；每个任务开始重置密度状态，避免不同分子相互污染。单个OPT内部复用成功密度。SP→OPT跨任务完整电子态缓存尚未实现，batch示例里的OPT重新从同一XYZ开始。失败后关闭worker，下一个任务用新进程；任一失败则整批退出码非零。

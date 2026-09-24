@@ -16,7 +16,7 @@
 
 ```bash
 gpu-gau qz-submit --platform qzcli.local.json -- \
-  batch --config /shared/project/config.local.json \
+  batch --config /shared/project/config.local.yaml \
   --manifest /shared/project/examples/batch.json --output /shared/project/runs/batch-001
 ```
 
@@ -24,7 +24,7 @@ gpu-gau qz-submit --platform qzcli.local.json -- \
 
 ```bash
 gpu-gau qz-submit --platform qzcli.local.json --submit -- \
-  batch --config /shared/project/config.local.json \
+  batch --config /shared/project/config.local.yaml \
   --manifest /shared/project/examples/batch.json --output /shared/project/runs/batch-001
 ```
 
