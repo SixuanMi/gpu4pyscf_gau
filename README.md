@@ -57,7 +57,49 @@ gpu-gau qz-submit --platform qzcli.local.json -- \
 
 默认方法是B3LYP-D3BJ/def2-SVP，DF辅助基组def2-universal-jkfit，无溶剂。XYZ采用Å，电荷和自旋多重度必须显式提供。
 
-**已知限制：原库在部分大体系Hessian上会OOM。** 本项目提供默认关闭、限已审计构建的实验性[Hessian显存策略](docs/hessian-memory.md)，需显式启用并核查适用范围。零占位的电响应数据不能用于IR/Raman强度。TSOPT正常结束不自动等于正确过渡态，IRC局部路径不自动证明反应物/产物连通性。详见[限制与验证](docs/limitations.md)。
+零占位的电响应数据不能用于IR/Raman强度。TSOPT正常结束不自动等于正确过渡态，IRC局部路径不自动证明反应物/产物连通性。详见[限制与验证](docs/limitations.md)。
+
+## cuTENSOR与Hessian显存
+
+**已验证：启用cuTENSOR后，H100 80GB上的62原子（709 AO）和78原子（843 AO）算例，关闭本项目额外分块也能完成完整Hessian。** 此前回退到CuPy时，这两个算例的未修改路径曾OOM。因此不能把历史OOM概括为“这些体系必然需要本项目分块”。
+
+cuTENSOR是推荐的可选张量收缩后端。本次审计的CuPy回退路径会为部分收缩分配额外中间结果，即使传入`out`也未必原地计算；启用cuTENSOR能改变这部分工作区需求。应在实际worker环境确认后端生效，而不只检查pip安装记录：
+
+```bash
+python -c 'from gpu4pyscf_gau.hessian_memory import backend_diagnostics; import json; print(json.dumps(backend_diagnostics(), indent=2))'
+```
+
+输出中的`effective_backend`应为`cutensor`。已审计版本通过成功导入库自动选择后端，不支持手动设置`CONTRACT_ENGINE=cutensor`。实测组合为GPU4PySCF 1.8.1、PySCF 2.8.0、CuPy 13.6.0、cuTENSOR 2.2.0，具体安装和动态库配置见[安装说明](docs/installation.md)。
+
+| 已完成的H100验证 | 本项目额外分块 | 响应设置与结论 |
+|---|---|---|
+| 62/78原子完整原库Hessian | `off` | 原CPHF设置：1e-6＋SG1辅助网格；cuTENSOR下均完成、未OOM |
+| 62/78原子高精度导数一致性检查 | `conservative` | 1e-10＋SCF主网格，配合稳定DF梯度及更严格SCF；已测方向通过1e-5 Eh/Bohr²阈值 |
+| 新cuTENSOR镜像的Gaussian External水分子SP/OPT/FREQ | `conservative` | YAML新参数传递及真实运行通过；SP/普通OPT没有额外Hessian计算 |
+
+**上述未分块成功记录采用原CPHF设置，不能直接视为新高精度设置关闭分块后的显存保证。** 也尚未验证111原子在cuTENSOR下关闭本项目分块，不能将62/78原子的结果直接推广到更大基组或显存更少的设备。基函数数、响应设置和收缩后端都会影响内存需求；原子数不能单独决定能否计算。完整对照见[Hessian精度与cuTENSOR复核](docs/hessian-accuracy-followup.md)。
+
+`gpu.hessian_memory.policy`默认`"off"`，保留上游内存规划与已有分块算法；它并不表示上游完全不分块。需要额外限制中间张量大小时，可显式设为`conservative`。本项目策略仅支持已审计源码、单GPU串行worker，会校验源码并在计算结束后恢复原函数；它不能保证所有体系不OOM，也可能增加耗时。上游梯度的`lowmem`不是此处的Hessian开关。详见[显存策略](docs/hessian-memory.md)。
+
+## Hessian精度参数与稳定DF梯度
+
+当前外层YAML默认如下，完整示例及旧值注释见[config.yaml](examples/config.yaml)：
+
+```yaml
+gpu:
+  conv_tol_cpscf: 1e-10  # 原受测上游默认1e-6；null表示沿用所安装上游的默认阈值
+  cphf_grid: scf        # 原默认default：SG1(50,194)辅助网格
+  df_gradient_metric: original  # 稳定DF梯度需显式启用solve
+  hessian_memory:
+    policy: "off"      # 额外显存限制需显式启用conservative
+```
+
+`cphf_grid: scf`在Hessian计算前设置`mf.cphf_grids = mf.grids`，复用SCF主网格；本项目默认主网格为99×590、nwchem裁剪。设为`default`可恢复原辅助网格。这两个响应参数仅在Hessian请求时生效，不给SP或只请求梯度的OPT增加二阶导数计算；已测62/78原子的完整Hessian采用高精度响应设置时，单次耗时相对原响应设置增加约39%/42%，不能将此比例套用于整个优化流程。
+
+`df_gradient_metric: solve`是独立的、默认关闭的稳定性修正：把DF梯度中的显式逆矩阵作用改为直接求解等价线性方程，不改变泛函、基组或删减响应项。当前仅对通过源码校验的单GPU闭壳层DF开放，开壳层梯度会明确拒绝启用。显存分块对照与梯度/Hessian一致性是两项独立验收；仅启用cuTENSOR或新CPHF默认值，不等于已包含这项梯度修正。
+
+62/78原子的方向差分验证使用`solve`、SCF阈值1e-11/1e-9、高精度CPHF及`conservative`；只覆盖指定方向和步长，未重跑完整TSOPT/IRC轨迹。应用配置及精度范围见[导数一致性说明](docs/gradient-hessian-consistency.md)。
+
 
 ## 文档
 
