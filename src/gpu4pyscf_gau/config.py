@@ -16,7 +16,7 @@ DEFAULT = {
             'atom_grid': [99, 590], 'pruning': 'nwchem', 'conv_tol': 1e-10,
             'conv_tol_grad': 1e-7, 'direct_scf_tol': 1e-14, 'max_cycle': 100,
             'threads': 1, 'memory_mb': 32000, 'reuse_guess': True,
-            'reset_at_initial_geometry': True},
+            'reset_at_initial_geometry': True, 'hessian_memory': {'policy':'off'}},
     'routes': {'sp': '', 'opt': 'Opt=(NoMicro,Redundant,MaxCycles=100)',
                'tsopt': 'Opt=(TS,CalcFC,NoEigenTest,NoMicro,Redundant,MaxCycles=100)',
                'irc': 'IRC=(CalcFC,HPC,MaxPoints=10,StepSize=10)',
@@ -38,6 +38,10 @@ def load_config(filename):
                 raise ValueError(f'Unknown configuration key: {section}.{key}')
             result[section][key] = value
     gpu = result['gpu']
+    from .hessian_memory import validate
+    gpu['hessian_memory'] = validate(gpu['hessian_memory'])
+    if gpu['hessian_memory']['policy'] != 'off' and not gpu['density_fit']:
+        raise ValueError('Conservative Hessian memory policy requires density fitting')
     if gpu['with_solvent']:
         raise ValueError('Solvent is not implemented by this External bridge')
     if gpu['pruning'] not in ('nwchem', 'none'):

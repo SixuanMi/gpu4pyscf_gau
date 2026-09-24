@@ -135,14 +135,22 @@ class Engine:
         hess_seconds = 0
         asymmetry = None
         if req['deriv'] == 2:
+            from .hessian_memory import hessian_memory_scope, backend_diagnostics
+            memory_report = dict(backend=backend_diagnostics())
+            if (cfg.get('hessian_memory') or {}).get('policy', 'off') != 'off' and not cfg.get('density_fit'):
+                raise ValueError('Conservative Hessian memory policy requires density fitting')
             hdriver = mf.Hessian()
             if cfg.get('density_fit'):
                 hdriver.auxbasis_response = 2
             if cfg['method'].lower() != 'hf':
                 hdriver.grid_response = True
             t = time.perf_counter()
-            hessian = self.array(hdriver.kernel()).transpose(0,2,1,3).reshape(3*mol.natm,3*mol.natm)
-            cp.cuda.get_current_stream().synchronize()
+            try:
+                with hessian_memory_scope(cfg.get('hessian_memory'), memory_report):
+                    hessian = self.array(hdriver.kernel()).transpose(0,2,1,3).reshape(3*mol.natm,3*mol.natm)
+                    cp.cuda.get_current_stream().synchronize()
+            finally:
+                (directory/'hessian_memory.json').write_text(json.dumps(memory_report,indent=2)+'\n')
             hess_seconds = time.perf_counter()-t
             asymmetry = float(np.max(np.abs(hessian-hessian.T)))
             if not np.isfinite(hessian).all() or asymmetry > 5e-5:

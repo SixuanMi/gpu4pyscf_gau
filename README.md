@@ -55,7 +55,7 @@ gpu-gau qz-submit --platform qzcli.local.json -- \
 
 默认方法是B3LYP-D3BJ/def2-SVP，DF辅助基组def2-universal-jkfit，无溶剂。XYZ采用Å，电荷和自旋多重度必须显式提供。
 
-**已知限制：当前库版本在部分大体系Hessian上会OOM；本次整理没有加入Hessian优化。** 零占位的电响应数据不能用于IR/Raman强度。TSOPT正常结束不自动等于正确过渡态，IRC局部路径不自动证明反应物/产物连通性。详见[限制与验证](docs/limitations.md)。
+**已知限制：原库在部分大体系Hessian上会OOM。** 本项目提供默认关闭、限已审计构建的实验性[Hessian显存策略](docs/hessian-memory.md)，需显式启用并核查适用范围。零占位的电响应数据不能用于IR/Raman强度。TSOPT正常结束不自动等于正确过渡态，IRC局部路径不自动证明反应物/产物连通性。详见[限制与验证](docs/limitations.md)。
 
 ## 文档
 
@@ -64,6 +64,7 @@ gpu-gau qz-submit --platform qzcli.local.json -- \
 - [qzcli配置与提交](docs/qzcli.md)
 - [已知限制与排错](docs/limitations.md)
 - [历史基准和实测显存摘要](docs/benchmarks.md)
+- [Hessian显存策略与兼容性](docs/hessian-memory.md)
 - [仓库结构、验证及旧数据归档](docs/maintenance.md)
 
 CPU接口测试：`python -m unittest discover -s tests -v`。GitHub CI只跑接口测试，不包含专有Gaussian程序或GPU数值测试。
