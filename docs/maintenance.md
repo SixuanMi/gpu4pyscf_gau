@@ -27,7 +27,7 @@ tests/                    CPU协议与Unix socket集成测试
 ```bash
 python -m pip install -e .
 python -m unittest discover -s tests -v
-gpu-gau check-config --config examples/config.json
+gpu-gau check-config --config examples/config.yaml
 ```
 
 本地CPU测试包含协议格式、Hessian打包、失败判据、路径空格、真实Unix socket回调、worker复用和失败归档。mock Gaussian测试验证接口，不替代数值计算。真实GPU/Gaussian验证单独记录在validation.md。

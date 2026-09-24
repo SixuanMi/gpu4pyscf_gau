@@ -69,6 +69,7 @@ gpu-gau qz-submit --platform qzcli.local.json -- \
 - [Hessian显存策略与兼容性](docs/hessian-memory.md)
 - [GPU梯度/Hessian一致性参数与修正](docs/gradient-hessian-consistency.md)
 - [H100分块、精度与cuTENSOR实测](docs/hessian-accuracy-followup.md)
+- [YAML配置与新cuTENSOR镜像运行验证](docs/yaml-release-validation.md)
 - [仓库结构、验证及旧数据归档](docs/maintenance.md)
 
 CPU接口测试：`python -m unittest discover -s tests -v`。GitHub CI只跑接口测试，不包含专有Gaussian程序或GPU数值测试。
