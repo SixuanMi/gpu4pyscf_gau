@@ -14,6 +14,7 @@ import time
 import traceback
 
 from .config import executable
+from .core_dump import disable_core_dumps, cleanup_core_dumps
 from .external_client import request
 from .fchk import read_fchk
 
@@ -131,13 +132,25 @@ def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
     with (directory/'input.gjf').open('rb') as inp, (directory/'gaussian.log').open('wb') as log:
         process = subprocess.Popen([gauss['executable']], cwd=directory, env=env, stdin=inp,
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        cleanup = dict(files=[], bytes=0)
+        deadline = time.monotonic()+cfg['runtime']['timeout_seconds']
         try:
-            rc = process.wait(timeout=cfg['runtime']['timeout_seconds'])
-        except subprocess.TimeoutExpired:
-            stop_process(process); rc = 124
+            while True:
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    stop_process(process); rc = 124; break
+                try:
+                    rc = process.wait(timeout=min(1,remaining)); break
+                except subprocess.TimeoutExpired:
+                    report = cleanup_core_dumps(directory)
+                    cleanup['files'].extend(report['files']); cleanup['bytes'] += report['bytes']
         except BaseException:
             stop_process(process); raise
+        finally:
+            report = cleanup_core_dumps(directory)
+            cleanup['files'].extend(report['files']); cleanup['bytes'] += report['bytes']
     status = gaussian_status((directory/'gaussian.log').read_text(errors='replace'), job['task'], rc)
+    status['core_cleanup'] = cleanup
     status['gaussian_wall_seconds'] = time.perf_counter()-start
     if not status['completed']:
         return status
@@ -165,6 +178,7 @@ def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
 
 
 def run_jobs(cfg, jobs, output):
+    disable_core_dumps()
     output = Path(output).resolve()
     if output.exists():
         raise ValueError(f'Output already exists; choose a new directory: {output}')

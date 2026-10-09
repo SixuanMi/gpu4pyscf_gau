@@ -1,6 +1,8 @@
 """Resumable, disjoint HDF5 reaction shards using the existing Gaussian runner."""
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from contextlib import ExitStack
 import copy
 import fcntl
 import hashlib
@@ -13,10 +15,32 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 
 from .config import load_config
+from .core_dump import disable_core_dumps, cleanup_core_dumps
 from .fchk import read_fchk
 from .runner import BOHR, save
+
+
+# Threads only orchestrate isolated Gaussian/worker subprocesses; CUDA is never
+# imported in this scheduler. Every reaction owns its state, scratch and socket.
+_ACTIVE = set()
+_ACTIVE_LOCK = threading.Lock()
+_CANCEL = threading.Event()
+PIPELINE_VERSION = 2
+
+
+def cancel_active():
+    from .runner import stop_process
+    with _ACTIVE_LOCK:
+        _CANCEL.set()
+        processes = list(_ACTIVE)
+    for process in processes:
+        try:
+            stop_process(process)
+        except ProcessLookupError:
+            pass
 
 
 def digest(value):
@@ -132,11 +156,28 @@ def stage(cfg, reaction, name, task, xyz, charge, mult, state, retry_failed, tim
     command=[sys.executable,'-m','gpu4pyscf_gau','run','--config',str(reaction/'config.json'),
              '--xyz',str(xyz),'--task',task,'--charge',str(charge),'--multiplicity',str(mult),'--output',str(target)]
     with (target.parent/f'attempt_{attempts+1:03d}.launcher.log').open('w') as log:
-        p=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
-        try:rc=p.wait()
+        with _ACTIVE_LOCK:
+            if _CANCEL.is_set():raise KeyboardInterrupt('Scheduler cancelled')
+            p=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+            _ACTIVE.add(p)
+        attempt['core_cleanup'] = dict(files=[], bytes=0)
+        try:
+            while True:
+                try:
+                    rc=p.wait(timeout=1)
+                    break
+                except subprocess.TimeoutExpired:
+                    report=cleanup_core_dumps(target)
+                    attempt['core_cleanup']['files'].extend(report['files'])
+                    attempt['core_cleanup']['bytes']+=report['bytes']
         except BaseException:
             from .runner import stop_process
             stop_process(p);raise
+        finally:
+            report=cleanup_core_dumps(target)
+            attempt['core_cleanup']['files'].extend(report['files'])
+            attempt['core_cleanup']['bytes']+=report['bytes']
+            with _ACTIVE_LOCK:_ACTIVE.discard(p)
     summary=target/'summary.json';passed=rc==0 and summary.exists() and json.loads(summary.read_text()).get('completed')
     passed=passed and (target/task/'final.xyz').exists()
     if passed:
@@ -150,83 +191,143 @@ def stage(cfg, reaction, name, task, xyz, charge, mult, state, retry_failed, tim
     return target
 
 
+def run_reaction(cfg, row, numbers, coords, source_index, meta, control, args):
+    reaction=control/f'chunk_{row["chunk"]:05d}'/f'{row["index"]:06d}_{row["id"]}'
+    reaction.mkdir(parents=True,exist_ok=True)
+    cleanup=cleanup_core_dumps(reaction)
+    path=reaction/'state.json'
+    state=json.loads(path.read_text()) if path.exists() else dict(record=row,stages={},status='pending')
+    if cleanup['files']:
+        state.setdefault('core_cleanup',[]).append(cleanup);save(path,state)
+    if state['status']=='complete':return 'already_complete'
+    if state['status'] in ['failed','rejected'] and not args.retry_failed:return 'already_'+state['status']
+    try:
+        if _CANCEL.is_set():raise KeyboardInterrupt('Scheduler cancelled')
+        ts=reaction/'ts_input.xyz';write_xyz(ts,numbers,coords,row['id'])
+        save(reaction/'config.json',cfg)
+        save(reaction/'input.json',dict(record=row,charge=meta['charge'],multiplicity=meta['multiplicity'],source_index=source_index))
+        state['status']='running';save(path,state)
+        def calculate(name,task,xyz):
+            return stage(cfg,reaction,name,task,xyz,meta['charge'],meta['multiplicity'],state,args.retry_failed,args.max_attempts)
+        tsopt=calculate('tsopt','tsopt',ts)
+        freq=calculate('ts_freq','freq',tsopt/'tsopt/final.xyz')
+        frequencies=json.loads((freq/'summary.json').read_text())['results'][0]['frequencies_cm1']
+        imaginary=[v for v in frequencies if v<args.imaginary_threshold]
+        state['ts_validation']=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
+        if not frequencies or len(imaginary)!=1:
+            state.update(status='rejected',reason='Optimized TS does not have exactly one significant imaginary frequency')
+            save(path,state);return 'rejected'
+        irc=calculate('irc','irc',tsopt/'tsopt/final.xyz')
+        endpoints=irc_endpoints(irc/'irc/gaussian.fchk',numbers,reaction)
+        state['irc_endpoints']=endpoints;save(path,state)
+        optimized={}
+        for direction in ['reverse','forward']:
+            optimized[direction]=calculate('endpoint_opt_'+direction,'opt',endpoints[direction]['xyz'])/'opt/final.xyz'
+        # Both OPTs must succeed before either endpoint FREQ starts.
+        state['endpoint_validation']={}
+        for direction in ['reverse','forward']:
+            freq=calculate('endpoint_freq_'+direction,'freq',optimized[direction])
+            frequencies=json.loads((freq/'summary.json').read_text())['results'][0]['frequencies_cm1']
+            imaginary=[v for v in frequencies if v<args.imaginary_threshold]
+            state['endpoint_validation'][direction]=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
+            save(path,state)
+        if any(not v['frequencies_cm1'] or v['imaginary_count'] for v in state['endpoint_validation'].values()):
+            state.update(status='rejected',reason='Endpoint FREQ has significant imaginary frequencies or no frequencies')
+            save(path,state);return 'rejected'
+        state.pop('reason',None)
+        state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, bidirectional IRC, converged endpoint OPTs with no significant imaginary frequencies; reference R/P identity not verified')
+        save(path,state);return 'complete'
+    except (KeyboardInterrupt,SystemExit):raise
+    except Exception as exc:
+        state.update(status='failed',reason=str(exc));save(path,state);return 'failed'
+
+
+def bounded_results(pool, items, submit, capacity):
+    """Keep at most capacity reactions in flight; refill after each completion."""
+    pending={};items=iter(items)
+    while True:
+        while len(pending)<capacity:
+            try:item=next(items)
+            except StopIteration:break
+            pending[submit(pool,item)]=item
+        if not pending:return
+        done,_=wait(pending,return_when=FIRST_COMPLETED)
+        for future in done:
+            item=pending.pop(future)
+            yield item,future.result()
+
+
 def run(args):
     import h5py
     cfg=load_config(args.config)
     if not cfg['gaussian']['formchk']:raise ValueError('Pipeline requires formchk and accepted geometries')
-    if args.shard<0 or args.limit is not None and args.limit<1 or args.chunk is not None and args.chunk<0:raise ValueError('Invalid shard/limit/chunk')
+    shards=getattr(args,'shards',None) or [args.shard]
+    concurrency=getattr(args,'concurrency',4)
+    if len(set(shards))!=len(shards) or any(s is None or s<0 for s in shards) or concurrency not in range(1,5):
+        raise ValueError('Specify distinct shards and concurrency 1..4')
+    if args.limit is not None and args.limit<1 or args.chunk is not None and args.chunk<0:raise ValueError('Invalid limit/chunk')
     root=Path(args.output).resolve();root.mkdir(parents=True,exist_ok=True)
     manifests=Path(args.manifests).resolve();meta=json.loads((manifests/'dataset.json').read_text())
-    if args.shard>=meta['shards']:raise ValueError('Shard out of range')
-    manifest=manifests/meta['manifests'][args.shard]
-    if hashlib.sha256(manifest.read_bytes()).hexdigest()!=meta['manifest_sha256'][manifest.name]:raise ValueError('Manifest changed')
-    settings=dict(dataset=meta,config=cfg,imaginary_threshold=args.imaginary_threshold,shard=args.shard)
-    signature=digest(settings);control=root/f'shard_{args.shard:02d}';control.mkdir(exist_ok=True)
-    with (control/'run.lock').open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        metadata=control/'run.json'
-        if metadata.exists() and json.loads(metadata.read_text())['fingerprint']!=signature:raise ValueError('Run settings changed; use another output root')
-        save(metadata,dict(fingerprint=signature,settings=settings))
-        selected=set(args.indices) if args.indices else None
-        if selected is not None and any(i<0 or i>=meta['count'] or i%meta['shards']!=args.shard for i in selected):
-            raise ValueError('Selected indices are outside this shard')
-        counts=Counter();processed=0
-        with h5py.File(meta['path'],'r') as f, manifest.open() as rows:
-            if identity(Path(meta['path']),f)!={k:meta[k] for k in ['path','size','mtime_ns','dataset_version','count']}:
-                raise ValueError('Source HDF5 identity changed')
-            for line in rows:
-                row=json.loads(line)
-                if selected is not None and row['index'] not in selected:continue
-                if args.chunk is not None and row['chunk']!=args.chunk:continue
-                if args.limit is not None and processed>=args.limit:break
-                processed+=1
-                reaction=control/f'chunk_{row["chunk"]:05d}'/f'{row["index"]:06d}_{row["id"]}'
-                reaction.mkdir(parents=True,exist_ok=True)
-                path=reaction/'state.json'
-                state=json.loads(path.read_text()) if path.exists() else dict(record=row,stages={},status='pending')
-                if state['status']=='complete':counts['already_complete']+=1;continue
-                if state['status'] in ['failed','rejected'] and not args.retry_failed:counts['already_'+state['status']]+=1;continue
-                try:
-                    i=row['index'];a,b=map(int,f['offsets/atom'][i:i+2]);numbers=f['atoms/atomic_numbers'][a:b]
-                    if f['records/id'][i].decode()!=row['id'] or b-a!=row['natoms']:raise ValueError('Manifest does not match HDF5 row')
-                    ts=reaction/'ts_input.xyz';write_xyz(ts,numbers,f['TS/coordinates'][a:b],row['id'])
-                    save(reaction/'config.json',cfg);save(reaction/'input.json',dict(record=row,charge=meta['charge'],multiplicity=meta['multiplicity'],source_index=int(f['records/source_index'][i])))
-                    state['status']='running';save(path,state)
-                    def calculate(name,task,xyz):return stage(cfg,reaction,name,task,xyz,meta['charge'],meta['multiplicity'],state,args.retry_failed,args.max_attempts)
-                    tsopt=calculate('tsopt','tsopt',ts)
-                    freq=calculate('ts_freq','freq',tsopt/'tsopt/final.xyz')
-                    info=json.loads((freq/'summary.json').read_text())['results'][0];frequencies=info['frequencies_cm1']
-                    imaginary=[v for v in frequencies if v<args.imaginary_threshold]
-                    state['ts_validation']=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
-                    if not frequencies or len(imaginary)!=1:
-                        state.update(status='rejected',reason='Optimized TS does not have exactly one significant imaginary frequency');save(path,state);counts['rejected']+=1;continue
-                    irc=calculate('irc','irc',tsopt/'tsopt/final.xyz')
-                    endpoints=irc_endpoints(irc/'irc/gaussian.fchk',numbers,reaction)
-                    state['irc_endpoints']=endpoints;save(path,state)
-                    for direction in ['reverse','forward']:
-                        calculate('endpoint_opt_'+direction,'opt',endpoints[direction]['xyz'])
-                    state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, local bidirectional IRC, converged endpoint OPT; reference R/P identity not verified')
-                    save(path,state);counts['complete']+=1
-                except (KeyboardInterrupt,SystemExit):raise
-                except Exception as exc:
-                    state.update(status='failed',reason=str(exc));save(path,state);counts['failed']+=1
-                finally:
-                    save(control/'progress.json',dict(processed=processed,counts=dict(counts),last_record=row,updated=time.time()))
-                print(json.dumps(dict(index=row['index'],id=row['id'],status=state['status'],reason=state.get('reason')),ensure_ascii=False),flush=True)
-        save(control/'summary.json',dict(processed=processed,counts=dict(counts),finished=time.time()))
-        return 1 if any(counts[k] for k in ['failed','rejected','already_failed','already_rejected']) else 0
+    if any(s>=meta['shards'] for s in shards):raise ValueError('Shard out of range')
+    selected=set(args.indices) if args.indices else None
+    if selected is not None and any(i<0 or i>=meta['count'] or i%meta['shards'] not in shards for i in selected):
+        raise ValueError('Selected indices are outside selected shards')
+    _CANCEL.clear()
+    controls={};counts={s:Counter() for s in shards};processed=Counter()
+    with ExitStack() as stack:
+        for shard in sorted(shards):
+            manifest=manifests/meta['manifests'][shard]
+            if hashlib.sha256(manifest.read_bytes()).hexdigest()!=meta['manifest_sha256'][manifest.name]:raise ValueError('Manifest changed')
+            settings=dict(dataset=meta,config=cfg,imaginary_threshold=args.imaginary_threshold,shard=shard,pipeline_version=PIPELINE_VERSION)
+            signature=digest(settings);control=root/f'shard_{shard:02d}';control.mkdir(exist_ok=True)
+            lock=stack.enter_context((control/'run.lock').open('a'));fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            metadata=control/'run.json'
+            if metadata.exists() and json.loads(metadata.read_text())['fingerprint']!=signature:raise ValueError('Run settings changed; use another output root')
+            save(metadata,dict(fingerprint=signature,settings=settings,concurrency=concurrency));controls[shard]=control
+        f=stack.enter_context(h5py.File(meta['path'],'r'))
+        if identity(Path(meta['path']),f)!={k:meta[k] for k in ['path','size','mtime_ns','dataset_version','count']}:
+            raise ValueError('Source HDF5 identity changed')
+        def records():
+            emitted=0
+            for shard in shards:
+                with (manifests/meta['manifests'][shard]).open() as rows:
+                    for line in rows:
+                        row=json.loads(line)
+                        if selected is not None and row['index'] not in selected:continue
+                        if args.chunk is not None and row['chunk']!=args.chunk:continue
+                        if args.limit is not None and emitted>=args.limit:return
+                        emitted+=1;yield row
+        def submit(pool,row):
+            i=row['index'];a,b=map(int,f['offsets/atom'][i:i+2])
+            if f['records/id'][i].decode()!=row['id'] or b-a!=row['natoms']:raise ValueError('Manifest does not match HDF5 row')
+            # Only the scheduler thread accesses HDF5. Copy just one geometry per slot.
+            return pool.submit(run_reaction,cfg,row,f['atoms/atomic_numbers'][a:b],f['TS/coordinates'][a:b],int(f['records/source_index'][i]),meta,controls[row['shard']],args)
+        started=time.time();pool=ThreadPoolExecutor(max_workers=concurrency)
+        try:
+            for row,status in bounded_results(pool,records(),submit,concurrency):
+                shard=row['shard'];processed[shard]+=1;counts[shard][status]+=1
+                save(controls[shard]/'progress.json',dict(processed=processed[shard],counts=dict(counts[shard]),last_record=row,updated=time.time()))
+                print(json.dumps(dict(index=row['index'],id=row['id'],status=status),ensure_ascii=False),flush=True)
+        except BaseException:
+            cancel_active();raise
+        finally:
+            pool.shutdown(wait=True,cancel_futures=True)
+        for shard,control in controls.items():
+            save(control/'summary.json',dict(processed=processed[shard],counts=dict(counts[shard]),started=started,finished=time.time(),concurrency=concurrency))
+        return 1 if any(c[k] for c in counts.values() for k in ['failed','rejected','already_failed','already_rejected']) else 0
 
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     a=sub.add_parser('prepare');a.add_argument('--h5',required=True);a.add_argument('--output',required=True);a.add_argument('--shards',type=int,default=8);a.add_argument('--chunk-size',type=int,default=100)
-    a=sub.add_parser('run');a.add_argument('--config',required=True);a.add_argument('--manifests',required=True);a.add_argument('--shard',type=int,required=True);a.add_argument('--output',required=True);a.add_argument('--chunk',type=int);a.add_argument('--limit',type=int);a.add_argument('--indices',type=int,nargs='+');a.add_argument('--retry-failed',action='store_true');a.add_argument('--max-attempts',type=int,default=2);a.add_argument('--imaginary-threshold',type=float,default=-20.)
+    a=sub.add_parser('run');a.add_argument('--config',required=True);a.add_argument('--manifests',required=True);g=a.add_mutually_exclusive_group(required=True);g.add_argument('--shard',type=int);g.add_argument('--shards',type=int,nargs='+');a.add_argument('--concurrency',type=int,default=4);a.add_argument('--output',required=True);a.add_argument('--chunk',type=int);a.add_argument('--limit',type=int);a.add_argument('--indices',type=int,nargs='+');a.add_argument('--retry-failed',action='store_true');a.add_argument('--max-attempts',type=int,default=2);a.add_argument('--imaginary-threshold',type=float,default=-20.)
     args=p.parse_args(argv)
     def stop(signum,frame):raise KeyboardInterrupt('Scheduler termination')
     signal.signal(signal.SIGTERM,stop)
     try:
         if args.command=='prepare':print(json.dumps(prepare(args.h5,args.output,args.shards,args.chunk_size),indent=2));return 0
         if args.max_attempts<1 or not math.isfinite(args.imaginary_threshold) or args.imaginary_threshold>=0:raise ValueError('Invalid validation/attempt limit')
+        disable_core_dumps()
         return run(args)
     except KeyboardInterrupt:return 130
     except (ValueError,OSError,RuntimeError) as exc:print(str(exc),file=sys.stderr);return 2

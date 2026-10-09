@@ -36,14 +36,19 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
 '''
 
 FAKE_GAUSSIAN = r'''
-import os,subprocess,sys
+import os,subprocess,sys,resource,time
 from pathlib import Path
+assert resource.getrlimit(resource.RLIMIT_CORE)==(0,0)
 text=sys.stdin.read()
 if os.environ.get('LD_PRELOAD'):raise RuntimeError('CUDA preload leaked to Gaussian')
 Path('external.in').write_text('3 0 0 1\n8 0 0 0 0\n1 0 1 0 0\n1 0 -1 0 0\n'.replace('\\n','\n'))
 r=subprocess.run(['gpu_gau_external','R','external.in','external.out','external.msg'])
 if r.returncode:sys.exit(r.returncode)
 if os.environ.get('FAKE_GAUSSIAN_FAIL')=='1':
+ Path('core.123').write_bytes(b'test dump')
+ deadline=time.monotonic()+4
+ while Path('core.123').exists() and time.monotonic()<deadline:time.sleep(.05)
+ if not Path('core.123').exists():Path('cleanup_live.ok').write_text('removed before process exit')
  print('Error termination');sys.exit(1)
 Path('gaussian.chk').write_text('fake')
 print('Normal termination of Gaussian')
@@ -115,7 +120,11 @@ class RunnerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):run_jobs(cfg,jobs,out)
                 cfg['gaussian']['environment']['FAKE_GAUSSIAN_FAIL']='1'
                 self.assertFalse(run_jobs(cfg,jobs[:1],d/'failure'))
-                self.assertFalse(json.loads((d/'failure/summary.json').read_text())['completed'])
+                failure=json.loads((d/'failure/summary.json').read_text())
+                self.assertFalse(failure['completed'])
+                self.assertTrue((d/'failure/one/cleanup_live.ok').exists())
+                self.assertFalse((d/'failure/one/core.123').exists())
+                self.assertEqual(failure['results'][0]['core_cleanup']['bytes'],9)
 
 
 if __name__=='__main__':unittest.main()

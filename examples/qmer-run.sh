@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Run one shard on one allocated GPU. SHARD_ID is 0..7.
+# Run one shard on one allocated GPU, up to 4 reactions at a time. SHARD_ID is 0..7.
+ulimit -c 0
 : "${SHARD_ID:?Set SHARD_ID to 0..7}"
 : "${QMER_CONFIG:?Set QMER_CONFIG to your calculation YAML}"
 : "${QMER_MANIFESTS:?Set QMER_MANIFESTS to the prepared manifest directory}"

@@ -2,13 +2,15 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 import h5py
 import numpy as np
 from gpu4pyscf_gau.config import DEFAULT
-from gpu4pyscf_gau.qmer import prepare, identity, irc_endpoints, stage, digest, run
+from gpu4pyscf_gau.qmer import prepare, identity, irc_endpoints, stage, digest, run, bounded_results, cleanup_core_dumps
 
 
 class QmerTests(unittest.TestCase):
@@ -58,7 +60,7 @@ class QmerTests(unittest.TestCase):
                 out=reaction/name;(out/task).mkdir(parents=True)
                 (out/task/'final.xyz').write_text(Path(xyz).read_text())
                 if task=='freq':
-                    (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=[-100,100,200])])))
+                    (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=([-100,100,200] if name=="ts_freq" else [100,200,300]))])))
                 if task=='irc':
                     def scalar(label,n):return f'{label:<42} I {n}\n'
                     def array(label,v):return f'{label:<42} R N= {len(v)}\n'+' '.join(map(str,v))+'\n'
@@ -67,14 +69,75 @@ class QmerTests(unittest.TestCase):
             with patch('gpu4pyscf_gau.qmer.stage',side_effect=fake_stage) as mock:
                 self.assertEqual(run(args),0)
                 self.assertEqual([x.args[2] for x in mock.call_args_list],
-                    ['tsopt','ts_freq','irc','endpoint_opt_reverse','endpoint_opt_forward'])
+                    ['tsopt','ts_freq','irc','endpoint_opt_reverse','endpoint_opt_forward','endpoint_freq_reverse','endpoint_freq_forward'])
                 self.assertEqual(run(args),0)
-                self.assertEqual(mock.call_count,5)
+                self.assertEqual(mock.call_count,7)
             state=json.loads(next((r/'results').rglob('state.json')).read_text())
             self.assertEqual(state['status'],'complete')
             self.assertEqual(state['ts_validation']['imaginary_count'],1)
+            self.assertEqual(state['endpoint_validation']['reverse']['imaginary_count'],0)
+            self.assertEqual(state['endpoint_validation']['forward']['imaginary_count'],0)
             args.indices=[1]
             with self.assertRaises(ValueError):run(args)
+
+    def test_bounded_parallel_refill(self):
+        barrier=threading.Barrier(4);refilled=threading.Event();lock=threading.Lock()
+        active=0;peak=0
+        def work(i):
+            nonlocal active,peak
+            with lock:active+=1;peak=max(peak,active)
+            try:
+                if i<4:barrier.wait(timeout=5)
+                if i==0:self.assertTrue(refilled.wait(timeout=5))
+                if i==4:refilled.set()
+                return i
+            finally:
+                with lock:active-=1
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results=list(bounded_results(pool,range(5),lambda p,i:p.submit(work,i),4))
+        self.assertEqual(sorted(x[1] for x in results),list(range(5)))
+        self.assertEqual(peak,4)
+        self.assertTrue(refilled.is_set())
+
+    def test_core_cleanup_preserves_checkpoints_and_outside_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r=Path(tmp);inside=r/'reaction';inside.mkdir();(inside/'stage').mkdir()
+            (inside/'stage/core.123').write_bytes(b'dump')
+            (inside/'core').write_bytes(b'big dump')
+            (inside/'core_model.json').write_text('keep')
+            (inside/'gaussian.chk').write_bytes(b'checkpoint')
+            outside=r/'core.456';outside.write_bytes(b'outside')
+            (inside/'core.999').symlink_to(outside)
+            report=cleanup_core_dumps(inside)
+            self.assertEqual(report['bytes'],12)
+            self.assertEqual(len(report['files']),2)
+            self.assertTrue(outside.exists())
+            self.assertTrue((inside/'core_model.json').exists())
+            self.assertTrue((inside/'gaussian.chk').exists())
+
+    def test_endpoint_imaginary_frequency_rejects_after_both_freqs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r=Path(tmp);self.dataset(r/'data.h5');prepare(r/'data.h5',r/'manifests',8,2)
+            (r/'config.json').write_text('{}')
+            args=SimpleNamespace(config=str(r/'config.json'),output=str(r/'results'),
+                manifests=str(r/'manifests'),shard=0,indices=[0],chunk=None,limit=1,
+                imaginary_threshold=-20.,retry_failed=False,max_attempts=2)
+            def fake_stage(cfg,reaction,name,task,xyz,*unused):
+                out=reaction/name;(out/task).mkdir(parents=True)
+                (out/task/'final.xyz').write_text(Path(xyz).read_text())
+                if task=='freq':
+                    values=[-100,100,200] if name in ['ts_freq','endpoint_freq_reverse'] else [100,200,300]
+                    (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=values)])))
+                return out
+            def fake_endpoints(fchk,numbers,reaction):
+                return {d:dict(xyz=str(reaction/'ts_input.xyz')) for d in ['reverse','forward']}
+            with patch('gpu4pyscf_gau.qmer.stage',side_effect=fake_stage) as mock, patch('gpu4pyscf_gau.qmer.irc_endpoints',side_effect=fake_endpoints):
+                self.assertEqual(run(args),1)
+                self.assertEqual(mock.call_count,7)
+            state=json.loads(next((r/'results').rglob('state.json')).read_text())
+            self.assertEqual(state['status'],'rejected')
+            self.assertEqual(state['endpoint_validation']['reverse']['imaginary_count'],1)
+            self.assertEqual(state['endpoint_validation']['forward']['imaginary_count'],0)
 
     def test_signed_endpoints_from_accepted_fchk(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,7 +21,7 @@ DEFAULT = {
             'df_gradient_metric': 'original', 'conv_tol_cpscf': 1e-10, 'cphf_grid': 'scf'},
     'routes': {'sp': '', 'opt': 'Opt=(NoMicro,Redundant,MaxCycles=100)',
                'tsopt': 'Opt=(TS,CalcFC,NoEigenTest,NoMicro,Redundant,MaxCycles=100)',
-               'irc': 'IRC=(CalcFC,HPC,MaxPoints=10,StepSize=10)',
+               'irc': 'IRC=(CalcFC,MaxPoints=40,StepSize=10,LQA)',
                'freq': 'Freq', 'force': 'Force'},
 }
 
