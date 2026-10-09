@@ -162,58 +162,59 @@ def run(args):
     if hashlib.sha256(manifest.read_bytes()).hexdigest()!=meta['manifest_sha256'][manifest.name]:raise ValueError('Manifest changed')
     settings=dict(dataset=meta,config=cfg,imaginary_threshold=args.imaginary_threshold,shard=args.shard)
     signature=digest(settings);control=root/f'shard_{args.shard:02d}';control.mkdir(exist_ok=True)
-    lock=(control/'run.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    metadata=control/'run.json'
-    if metadata.exists() and json.loads(metadata.read_text())['fingerprint']!=signature:raise ValueError('Run settings changed; use another output root')
-    save(metadata,dict(fingerprint=signature,settings=settings))
-    selected=set(args.indices) if args.indices else None
-    if selected is not None and any(i<0 or i>=meta['count'] or i%meta['shards']!=args.shard for i in selected):
-        raise ValueError('Selected indices are outside this shard')
-    counts=Counter();processed=0
-    with h5py.File(meta['path'],'r') as f, manifest.open() as rows:
-        if identity(Path(meta['path']),f)!={k:meta[k] for k in ['path','size','mtime_ns','dataset_version','count']}:
-            raise ValueError('Source HDF5 identity changed')
-        for line in rows:
-            row=json.loads(line)
-            if selected is not None and row['index'] not in selected:continue
-            if args.chunk is not None and row['chunk']!=args.chunk:continue
-            if args.limit is not None and processed>=args.limit:break
-            processed+=1
-            reaction=control/f'chunk_{row["chunk"]:05d}'/f'{row["index"]:06d}_{row["id"]}'
-            reaction.mkdir(parents=True,exist_ok=True)
-            path=reaction/'state.json'
-            state=json.loads(path.read_text()) if path.exists() else dict(record=row,stages={},status='pending')
-            if state['status']=='complete':counts['already_complete']+=1;continue
-            if state['status'] in ['failed','rejected'] and not args.retry_failed:counts['already_'+state['status']]+=1;continue
-            try:
-                i=row['index'];a,b=map(int,f['offsets/atom'][i:i+2]);numbers=f['atoms/atomic_numbers'][a:b]
-                if f['records/id'][i].decode()!=row['id'] or b-a!=row['natoms']:raise ValueError('Manifest does not match HDF5 row')
-                ts=reaction/'ts_input.xyz';write_xyz(ts,numbers,f['TS/coordinates'][a:b],row['id'])
-                save(reaction/'config.json',cfg);save(reaction/'input.json',dict(record=row,charge=meta['charge'],multiplicity=meta['multiplicity'],source_index=int(f['records/source_index'][i])))
-                state['status']='running';save(path,state)
-                def calculate(name,task,xyz):return stage(cfg,reaction,name,task,xyz,meta['charge'],meta['multiplicity'],state,args.retry_failed,args.max_attempts)
-                tsopt=calculate('tsopt','tsopt',ts)
-                freq=calculate('ts_freq','freq',tsopt/'tsopt/final.xyz')
-                info=json.loads((freq/'summary.json').read_text())['results'][0];frequencies=info['frequencies_cm1']
-                imaginary=[v for v in frequencies if v<args.imaginary_threshold]
-                state['ts_validation']=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
-                if not frequencies or len(imaginary)!=1:
-                    state.update(status='rejected',reason='Optimized TS does not have exactly one significant imaginary frequency');save(path,state);counts['rejected']+=1;continue
-                irc=calculate('irc','irc',tsopt/'tsopt/final.xyz')
-                endpoints=irc_endpoints(irc/'irc/gaussian.fchk',numbers,reaction)
-                state['irc_endpoints']=endpoints;save(path,state)
-                for direction in ['reverse','forward']:
-                    calculate('endpoint_opt_'+direction,'opt',endpoints[direction]['xyz'])
-                state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, local bidirectional IRC, converged endpoint OPT; reference R/P identity not verified')
-                save(path,state);counts['complete']+=1
-            except (KeyboardInterrupt,SystemExit):raise
-            except Exception as exc:
-                state.update(status='failed',reason=str(exc));save(path,state);counts['failed']+=1
-            finally:
-                save(control/'progress.json',dict(processed=processed,counts=dict(counts),last_record=row,updated=time.time()))
-            print(json.dumps(dict(index=row['index'],id=row['id'],status=state['status'],reason=state.get('reason')),ensure_ascii=False),flush=True)
-    save(control/'summary.json',dict(processed=processed,counts=dict(counts),finished=time.time()))
-    return 1 if any(counts[k] for k in ['failed','rejected','already_failed','already_rejected']) else 0
+    with (control/'run.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        metadata=control/'run.json'
+        if metadata.exists() and json.loads(metadata.read_text())['fingerprint']!=signature:raise ValueError('Run settings changed; use another output root')
+        save(metadata,dict(fingerprint=signature,settings=settings))
+        selected=set(args.indices) if args.indices else None
+        if selected is not None and any(i<0 or i>=meta['count'] or i%meta['shards']!=args.shard for i in selected):
+            raise ValueError('Selected indices are outside this shard')
+        counts=Counter();processed=0
+        with h5py.File(meta['path'],'r') as f, manifest.open() as rows:
+            if identity(Path(meta['path']),f)!={k:meta[k] for k in ['path','size','mtime_ns','dataset_version','count']}:
+                raise ValueError('Source HDF5 identity changed')
+            for line in rows:
+                row=json.loads(line)
+                if selected is not None and row['index'] not in selected:continue
+                if args.chunk is not None and row['chunk']!=args.chunk:continue
+                if args.limit is not None and processed>=args.limit:break
+                processed+=1
+                reaction=control/f'chunk_{row["chunk"]:05d}'/f'{row["index"]:06d}_{row["id"]}'
+                reaction.mkdir(parents=True,exist_ok=True)
+                path=reaction/'state.json'
+                state=json.loads(path.read_text()) if path.exists() else dict(record=row,stages={},status='pending')
+                if state['status']=='complete':counts['already_complete']+=1;continue
+                if state['status'] in ['failed','rejected'] and not args.retry_failed:counts['already_'+state['status']]+=1;continue
+                try:
+                    i=row['index'];a,b=map(int,f['offsets/atom'][i:i+2]);numbers=f['atoms/atomic_numbers'][a:b]
+                    if f['records/id'][i].decode()!=row['id'] or b-a!=row['natoms']:raise ValueError('Manifest does not match HDF5 row')
+                    ts=reaction/'ts_input.xyz';write_xyz(ts,numbers,f['TS/coordinates'][a:b],row['id'])
+                    save(reaction/'config.json',cfg);save(reaction/'input.json',dict(record=row,charge=meta['charge'],multiplicity=meta['multiplicity'],source_index=int(f['records/source_index'][i])))
+                    state['status']='running';save(path,state)
+                    def calculate(name,task,xyz):return stage(cfg,reaction,name,task,xyz,meta['charge'],meta['multiplicity'],state,args.retry_failed,args.max_attempts)
+                    tsopt=calculate('tsopt','tsopt',ts)
+                    freq=calculate('ts_freq','freq',tsopt/'tsopt/final.xyz')
+                    info=json.loads((freq/'summary.json').read_text())['results'][0];frequencies=info['frequencies_cm1']
+                    imaginary=[v for v in frequencies if v<args.imaginary_threshold]
+                    state['ts_validation']=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
+                    if not frequencies or len(imaginary)!=1:
+                        state.update(status='rejected',reason='Optimized TS does not have exactly one significant imaginary frequency');save(path,state);counts['rejected']+=1;continue
+                    irc=calculate('irc','irc',tsopt/'tsopt/final.xyz')
+                    endpoints=irc_endpoints(irc/'irc/gaussian.fchk',numbers,reaction)
+                    state['irc_endpoints']=endpoints;save(path,state)
+                    for direction in ['reverse','forward']:
+                        calculate('endpoint_opt_'+direction,'opt',endpoints[direction]['xyz'])
+                    state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, local bidirectional IRC, converged endpoint OPT; reference R/P identity not verified')
+                    save(path,state);counts['complete']+=1
+                except (KeyboardInterrupt,SystemExit):raise
+                except Exception as exc:
+                    state.update(status='failed',reason=str(exc));save(path,state);counts['failed']+=1
+                finally:
+                    save(control/'progress.json',dict(processed=processed,counts=dict(counts),last_record=row,updated=time.time()))
+                print(json.dumps(dict(index=row['index'],id=row['id'],status=state['status'],reason=state.get('reason')),ensure_ascii=False),flush=True)
+        save(control/'summary.json',dict(processed=processed,counts=dict(counts),finished=time.time()))
+        return 1 if any(counts[k] for k in ['failed','rejected','already_failed','already_rejected']) else 0
 
 
 def main(argv=None):
