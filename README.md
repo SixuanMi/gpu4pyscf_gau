@@ -4,6 +4,10 @@
 
 Gaussian每次给出结构，常驻GPU worker完成SCF并按需返回梯度/Hessian；Gaussian据此产生下一步结构。worker复用上一个成功点的密度作为初猜，回调客户端只使用Python标准库。
 
+## QMER批量反应（本分支）
+
+新增 `qmer-gau prepare/run`，读取combined HDF5的TS，按8份清单分块执行TSOPT→单虚频检查→双向IRC→两端OPT，并支持阶段断点续算与显式失败重试。主流程和接口沿用现有仓库；使用说明、结果判据和续算边界见[批量流程](docs/qmer-batch.md)。安装批量依赖：`python -m pip install -e ".[qmer]"`。
+
 ## 快速开始：直接运行
 
 先在已有GPU4PySCF环境安装本项目。此命令只安装接口，不自动选择或升级CUDA、CuPy和GPU4PySCF：
