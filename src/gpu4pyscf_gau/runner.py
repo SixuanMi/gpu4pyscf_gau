@@ -109,10 +109,18 @@ class Worker:
         self.log.close()
 
 
+def checkpoint_filenames(job):
+    stem = job.get('checkpoint_name', 'gaussian')
+    if not isinstance(stem, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', stem):
+        raise ValueError('Checkpoint name must be a nonempty basename containing letters, digits, _ or -')
+    return stem+'.chk', stem+'.fchk'
+
+
 def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
     directory.mkdir()
     scratch = directory/'scratch'; scratch.mkdir()
     gauss = cfg['gaussian']
+    checkpoint, formatted_checkpoint = checkpoint_filenames(job)
     env = os.environ.copy()
     env.update({k:str(v) for k,v in gauss['environment'].items()})
     env.pop('LD_PRELOAD', None)
@@ -124,7 +132,7 @@ def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
         env['GAUSS_EXEDIR'] = gauss['exedir']
     env['PATH'] = str(shim_dir)+os.pathsep+env.get('PATH','')
     route = f'External="gpu_gau_external" {cfg["routes"][job["task"]]} NoSymm'
-    text = f'%nprocshared={gauss["threads"]}\n%mem={gauss["memory"]}\n%chk=gaussian.chk\n#p {route}\n\nGPU4PySCF Gaussian External\n\n'
+    text = f'%nprocshared={gauss["threads"]}\n%mem={gauss["memory"]}\n%chk={checkpoint}\n#p {route}\n\nGPU4PySCF Gaussian External\n\n'
     text += f'{job["charge"]} {job["multiplicity"]}\n'
     text += '\n'.join(f'{s} {x:.12f} {y:.12f} {z:.12f}' for s,x,y,z in atoms)+'\n\n'
     (directory/'input.gjf').write_text(text)
@@ -150,6 +158,8 @@ def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
             report = cleanup_core_dumps(directory)
             cleanup['files'].extend(report['files']); cleanup['bytes'] += report['bytes']
     status = gaussian_status((directory/'gaussian.log').read_text(errors='replace'), job['task'], rc)
+    status['checkpoint_file'] = checkpoint
+    status['formatted_checkpoint_file'] = None
     status['core_cleanup'] = cleanup
     status['gaussian_wall_seconds'] = time.perf_counter()-start
     if not status['completed']:
@@ -157,13 +167,14 @@ def run_gaussian(directory, job, atoms, cfg, worker, shim_dir):
     # Formatted checkpoint provides the accepted final geometry, not the last trial geometry.
     formchk = gauss.get('formchk')
     if formchk:
-        fmt = subprocess.run([formchk,'gaussian.chk','gaussian.fchk'], cwd=directory, env=env,
+        fmt = subprocess.run([formchk,checkpoint,formatted_checkpoint], cwd=directory, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
         (directory/'formchk.log').write_text(fmt.stdout)
         if fmt.returncode:
             status.update(completed=False, error='formchk failed after normal Gaussian termination')
             return status
-        data = read_fchk(directory/'gaussian.fchk')
+        status['formatted_checkpoint_file'] = formatted_checkpoint
+        data = read_fchk(directory/formatted_checkpoint)
         save(directory/'fchk_data.json', data)
         coords = data.get('Current cartesian coordinates', [])
         if len(coords) == 3*len(atoms):
@@ -193,6 +204,7 @@ def run_jobs(cfg, jobs, output):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', job['name']) or job['name'] in names:
             raise ValueError('Each job needs a unique name containing only letters, digits, _ or -')
         names.add(job['name'])
+        checkpoint_filenames(job)
         if job['task'] not in cfg['routes'] or job['multiplicity'] < 1:
             raise ValueError('Invalid task/multiplicity')
         job['atoms'] = read_xyz(job['xyz'])

@@ -39,6 +39,20 @@ OUTPUT/shard_00/chunk_00000/000000_REACTION_HASH/
     stages/endpoint_freq_forward/attempt_001/...
 ```
 
+每个阶段的Gaussian `%chk`和对应fchk使用下列文件名；计算目录和`final.xyz`名称保持原格式：
+
+| 阶段 | chk | fchk |
+|---|---|---|
+| TSOPT | `ts_opt.chk` | `ts_opt.fchk` |
+| TS FREQ | `ts_freq.chk` | `ts_freq.fchk` |
+| IRC | `irc.chk` | `irc.fchk` |
+| reverse OPT | `endpoint_reverse_opt.chk` | `endpoint_reverse_opt.fchk` |
+| forward OPT | `endpoint_forword_opt.chk` | `endpoint_forword_opt.fchk` |
+| reverse FREQ | `endpoint_reverse_freq.chk` | `endpoint_reverse_freq.fchk` |
+| forward FREQ | `endpoint_forword_freq.chk` | `endpoint_forword_freq.fchk` |
+
+`forword`沿用用户指定拼写；内部方向标识仍为`forward`。新阶段通过runner的`--checkpoint-name`传入，formchk与最终几何读取使用同一名称，summary/state记录文件名。旧已完成阶段仍可读取原`gaussian.fchk`以支持续算，不会改名或重写历史计算证据。此命名变更不改变电子结构参数、验收版本或已有阶段指纹。单任务runner未指定`--checkpoint-name`时仍用`gaussian.chk/fchk`。
+
 每份保存run.json、progress.json及summary.json；反应级state.json保存每阶段指纹、attempt、状态、耗时边界及验证数据。数据集版本、路径、大小、修改时间、清单SHA256和解析后的计算配置绑定到该运行。源数据应只读；这些身份校验不是对10GB数据内容的全文件哈希。
 
 ## 每卡运行

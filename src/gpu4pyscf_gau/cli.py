@@ -36,6 +36,7 @@ def build_parser():
     run = sub.add_parser('run', help='Run one calculation on the current compute node')
     run.add_argument('--config', required=True)
     run.add_argument('--xyz', required=True)
+    run.add_argument('--checkpoint-name', help='Checkpoint basename without .chk/.fchk; default gaussian')
     run.add_argument('--task', choices=list(DEFAULT['routes']), required=True)
     run.add_argument('--charge', type=int, required=True)
     run.add_argument('--multiplicity', type=int, required=True)
@@ -83,6 +84,8 @@ def main(argv=None):
         if args.command == 'run':
             jobs = [dict(name=args.task, task=args.task, xyz=str(Path(args.xyz).resolve()),
                          charge=args.charge, multiplicity=args.multiplicity)]
+            if args.checkpoint_name is not None:
+                jobs[0]['checkpoint_name'] = args.checkpoint_name
         else:
             path = Path(args.manifest).resolve()
             jobs = json.loads(path.read_text())

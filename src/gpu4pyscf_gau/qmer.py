@@ -30,6 +30,15 @@ _ACTIVE_LOCK = threading.Lock()
 _CANCEL = threading.Event()
 PIPELINE_VERSION = 3
 ENDPOINT_IMAGINARY_THRESHOLD = 0.0
+CHECKPOINT_NAMES = {
+    'tsopt': 'ts_opt',
+    'ts_freq': 'ts_freq',
+    'irc': 'irc',
+    'endpoint_opt_reverse': 'endpoint_reverse_opt',
+    'endpoint_opt_forward': 'endpoint_forword_opt',
+    'endpoint_freq_reverse': 'endpoint_reverse_freq',
+    'endpoint_freq_forward': 'endpoint_forword_freq',
+}
 
 
 def cancel_active():
@@ -133,6 +142,15 @@ def irc_endpoints(fchk, numbers, output):
     return report
 
 
+def stage_fchk(output, task, name):
+    directory = Path(output)/task
+    for stem in (CHECKPOINT_NAMES[name], 'gaussian'):
+        path = directory/(stem+'.fchk')
+        if path.exists():
+            return path
+    raise FileNotFoundError('Stage formatted checkpoint missing: '+str(directory))
+
+
 def stage(cfg, reaction, name, task, xyz, charge, mult, state, retry_failed, timeout_attempts):
     fingerprint=digest(dict(config=cfg,task=task,input=Path(xyz).read_text(),charge=charge,multiplicity=mult))
     entry=state['stages'].get(name)
@@ -152,10 +170,10 @@ def stage(cfg, reaction, name, task, xyz, charge, mult, state, retry_failed, tim
     target=reaction/'stages'/name/f'attempt_{attempts+1:03d}'
     target.parent.mkdir(parents=True,exist_ok=True)
     attempt=dict(output=str(target),started=time.time())
-    entry=dict(status='running',fingerprint=fingerprint,output=str(target),attempts=(entry or {}).get('attempts',[])+[attempt])
+    entry=dict(status='running',fingerprint=fingerprint,output=str(target),checkpoint_name=CHECKPOINT_NAMES[name],attempts=(entry or {}).get('attempts',[])+[attempt])
     state['stages'][name]=entry;save(reaction/'state.json',state)
     command=[sys.executable,'-m','gpu4pyscf_gau','run','--config',str(reaction/'config.json'),
-             '--xyz',str(xyz),'--task',task,'--charge',str(charge),'--multiplicity',str(mult),'--output',str(target)]
+             '--xyz',str(xyz),'--task',task,'--checkpoint-name',CHECKPOINT_NAMES[name],'--charge',str(charge),'--multiplicity',str(mult),'--output',str(target)]
     with (target.parent/f'attempt_{attempts+1:03d}.launcher.log').open('w') as log:
         with _ACTIVE_LOCK:
             if _CANCEL.is_set():raise KeyboardInterrupt('Scheduler cancelled')
@@ -219,7 +237,7 @@ def run_reaction(cfg, row, numbers, coords, source_index, meta, control, args):
             state.update(status='rejected',reason='Optimized TS does not have exactly one significant imaginary frequency')
             save(path,state);return 'rejected'
         irc=calculate('irc','irc',tsopt/'tsopt/final.xyz')
-        endpoints=irc_endpoints(irc/'irc/gaussian.fchk',numbers,reaction)
+        endpoints=irc_endpoints(stage_fchk(irc,'irc','irc'),numbers,reaction)
         state['irc_endpoints']=endpoints;save(path,state)
         optimized={}
         for direction in ['reverse','forward']:

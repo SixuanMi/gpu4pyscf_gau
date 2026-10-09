@@ -36,7 +36,7 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
 '''
 
 FAKE_GAUSSIAN = r'''
-import os,subprocess,sys,resource,time
+import os,subprocess,sys,resource,time,re
 from pathlib import Path
 assert resource.getrlimit(resource.RLIMIT_CORE)==(0,0)
 text=sys.stdin.read()
@@ -50,10 +50,20 @@ if os.environ.get('FAKE_GAUSSIAN_FAIL')=='1':
  while Path('core.123').exists() and time.monotonic()<deadline:time.sleep(.05)
  if not Path('core.123').exists():Path('cleanup_live.ok').write_text('removed before process exit')
  print('Error termination');sys.exit(1)
-Path('gaussian.chk').write_text('fake')
+Path(re.search(r'^%chk=(.+)$',text,re.M).group(1)).write_text('fake')
 print('Normal termination of Gaussian')
 '''
 
+
+FAKE_FORMCHK = r'''
+import sys
+from pathlib import Path
+checkpoint,formatted=map(Path,sys.argv[1:])
+assert checkpoint.is_file() and checkpoint.with_suffix('.fchk')==formatted
+formatted.write_text('title\nmethod\n'+f"{'Current cartesian coordinates':<42} R N= 9\n"+'0 0 0 0 1 0 0 -1 0\n')
+print('Read checkpoint file',checkpoint)
+print('Write formatted file',formatted)
+'''
 
 class RunnerTests(unittest.TestCase):
     def test_negligible_forces_and_failed_optimization(self):
@@ -100,11 +110,13 @@ class RunnerTests(unittest.TestCase):
             d=Path(d)
             worker=d/'fake_worker.py';worker.write_text(FAKE_WORKER)
             gauss=d/'fake g16';gauss.write_text('#!'+sys.executable+'\n'+FAKE_GAUSSIAN);gauss.chmod(0o700)
+            formchk=d/'fake formchk';formchk.write_text('#!'+sys.executable+'\n'+FAKE_FORMCHK);formchk.chmod(0o700)
             xyz=d/'water.xyz';xyz.write_text('3\nwater\nO 0 0 0\nH 0 1 0\nH 0 -1 0\n')
-            cfg=copy.deepcopy(DEFAULT);cfg['gaussian'].update(executable=str(gauss),formchk=None)
+            cfg=copy.deepcopy(DEFAULT);cfg['gaussian'].update(executable=str(gauss),formchk=str(formchk))
             cfg['runtime']['startup_timeout_seconds']=10
             cfg['runtime']['timeout_seconds']=10
             jobs=[dict(name=n,task='sp',xyz=str(xyz),charge=0,multiplicity=1) for n in ['one','two']]
+            jobs[1]['checkpoint_name']='endpoint_forword_opt'
             def command(self,python,directory):
                 return [python,str(worker),'--root',str(directory),'--config',str(directory/'config.json'),'--socket',self.socket]
             with patch.object(Worker,'command',command):
@@ -116,6 +128,14 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual([x['successful_evaluations'] for x in summary],[1,1])
                 self.assertEqual(summary[1]['worker_startup_seconds'],0)
                 self.assertTrue((out/'one/external.out').exists())
+                self.assertTrue((out/'one/gaussian.chk').exists())
+                self.assertTrue((out/'one/gaussian.fchk').exists())
+                self.assertTrue((out/'two/endpoint_forword_opt.chk').exists())
+                self.assertTrue((out/'two/endpoint_forword_opt.fchk').exists())
+                self.assertIn('%chk=endpoint_forword_opt.chk', (out/'two/input.gjf').read_text())
+                self.assertEqual(summary[1]['checkpoint_file'],'endpoint_forword_opt.chk')
+                self.assertEqual(summary[1]['formatted_checkpoint_file'],'endpoint_forword_opt.fchk')
+                self.assertTrue((out/'two/final.xyz').exists())
                 self.assertFalse((out/'one/scratch').exists())
                 with self.assertRaises(ValueError):run_jobs(cfg,jobs,out)
                 cfg['gaussian']['environment']['FAKE_GAUSSIAN_FAIL']='1'

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 from gpu4pyscf_gau.config import DEFAULT
-from gpu4pyscf_gau.qmer import prepare, identity, irc_endpoints, stage, digest, run, bounded_results, cleanup_core_dumps
+from gpu4pyscf_gau.qmer import prepare, identity, irc_endpoints, stage, digest, run, bounded_results, cleanup_core_dumps, stage_fchk
 
 
 class QmerTests(unittest.TestCase):
@@ -64,7 +64,7 @@ class QmerTests(unittest.TestCase):
                 if task=='irc':
                     def scalar(label,n):return f'{label:<42} I {n}\n'
                     def array(label,v):return f'{label:<42} R N= {len(v)}\n'+' '.join(map(str,v))+'\n'
-                    (out/task/'gaussian.fchk').write_text('title\nmethod\n'+scalar('IRC Num geometry variables',6)+scalar('IRC Num results per geometry',2)+array('IRC point       1 Results for each geome',[-1,0,-2,1,-3,-1])+array('IRC point       1 Geometries',list(range(18))))
+                    (out/task/'irc.fchk').write_text('title\nmethod\n'+scalar('IRC Num geometry variables',6)+scalar('IRC Num results per geometry',2)+array('IRC point       1 Results for each geome',[-1,0,-2,1,-3,-1])+array('IRC point       1 Geometries',list(range(18))))
                 return out
             with patch('gpu4pyscf_gau.qmer.stage',side_effect=fake_stage) as mock:
                 self.assertEqual(run(args),0)
@@ -138,6 +138,7 @@ class QmerTests(unittest.TestCase):
                 if task=='freq':
                     values=[-100,100,200] if name=='ts_freq' else ([-0.0001,100,200] if name=='endpoint_freq_reverse' else [0.0,200,300])
                     (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=values)])))
+                if task=='irc':(out/task/'gaussian.fchk').write_text('legacy mock IRC checkpoint')
                 return out
             def fake_endpoints(fchk,numbers,reaction):
                 return {d:dict(xyz=str(reaction/'ts_input.xyz')) for d in ['reverse','forward']}
@@ -160,6 +161,12 @@ class QmerTests(unittest.TestCase):
             d=irc_endpoints(p,[1],r)
             self.assertEqual(d['forward']['reaction_coordinate'],2)
             self.assertEqual(d['reverse']['reaction_coordinate'],-2)
+            directory=r/'stage/irc';directory.mkdir(parents=True)
+            legacy=directory/'gaussian.fchk';legacy.write_text(p.read_text())
+            self.assertEqual(stage_fchk(r/'stage','irc','irc'),legacy)
+            current=directory/'irc.fchk';current.write_text(p.read_text())
+            self.assertEqual(stage_fchk(r/'stage','irc','irc'),current)
+            self.assertEqual(irc_endpoints(stage_fchk(r/'stage','irc','irc'),[1],r)['forward']['reaction_coordinate'],2)
             self.assertIn('3.175063265418',(r/'forward.xyz').read_text())
             p.write_text(p.read_text().replace('-4 -1 -5 -2','-4 1 -5 2'))
             with self.assertRaises(ValueError):irc_endpoints(p,[1],r)
