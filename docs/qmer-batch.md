@@ -6,7 +6,7 @@
 TSOPT → 独立TS FREQ → 双向IRC → reverse endpoint OPT → forward endpoint OPT → reverse FREQ → forward FREQ
 ```
 
-TSOPT必须有Gaussian正常结束与优化完成标志，且未发生Cartesian fallback；FREQ中低于-20 cm⁻¹的频率必须恰好一个（可通过 `--imaginary-threshold` 调整）。IRC必须正常结束，且格式化检查点中包含正、负反应坐标对应的有限、接受几何；从最远正负点分别启动endpoint OPT。两个端点都优化收敛后，分别对接受的优化结构做独立FREQ；两端低于-20 cm⁻¹的显著虚频都为0且频率列表非空才标记complete。小于该阈值幅度的软负频保留在验证记录中，不等于严格所有频率均为正。失败阶段阻止后续阶段。
+TSOPT必须有Gaussian正常结束与优化完成标志，且未发生Cartesian fallback；FREQ中低于-20 cm⁻¹的频率必须恰好一个（可通过 `--imaginary-threshold` 调整）。IRC必须正常结束，且格式化检查点中包含正、负反应坐标对应的有限、接受几何；从最远正负点分别启动endpoint OPT。两个端点都优化收敛后，分别对接受的优化结构做独立FREQ；端点FREQ使用独立且固定的严格0 cm⁻¹阈值：任何频率<0（包括幅度极小的软负频）均计为虚频，两端虚频数都为0且频率列表非空才标记complete；恰好0不算虚频。即使reverse FREQ出现负频，也继续计算forward FREQ，完成两端后统一判定。`--imaginary-threshold`仅控制TS验收，不能放宽端点判据。FREQ本身异常退出仍按计算失败处理。失败阶段阻止后续阶段。
 
 这继承现有仓库的科学方法和Gaussian routes。本分支默认IRC改为 `IRC=(CalcFC,MaxPoints=40,StepSize=10,LQA)`（原main默认为 `IRC=(CalcFC,HPC,MaxPoints=10,StepSize=10)`），是有限长度的局部双向路径；需要更长路径时在运行前显式覆盖 `routes.irc`。endpoint OPT收敛不等于已确认与数据集R/P对应，本入口保留forward/reverse命名，不未经结构检查就给它们贴R/P标签。
 
@@ -89,7 +89,7 @@ qmer-gau run --config /shared/config.local.yaml \
 
 重复同一命令即可恢复。完整反应直接跳过；未完成反应复用已成功阶段。崩溃前runner已生成completed=true及接受几何、但state尚未提交时，会恢复该阶段。中断阶段另开新attempt；这是阶段边界续算，不承诺恢复Gaussian中断时某一步的内存波函数或IRC轨迹。
 
-失败/频率不合格默认跳过。只有显式 `--retry-failed` 才再次尝试；每阶段默认最多2个attempt，可通过 `--max-attempts`调整。已成功前置阶段不重算，失败attempt不覆盖。流程版本也写入运行指纹；旧5阶段结果不会被当作新7阶段的完整结果。改变科学参数或几何时必须用新的output根目录，避免混用历史结果。每shard使用进程锁，同一份清单不能被两个进程同时计算；8个不同shard可独立并行。
+失败/频率不合格默认跳过。只有显式 `--retry-failed` 才再次尝试；每阶段默认最多2个attempt，可通过 `--max-attempts`调整。已成功前置阶段不重算，失败attempt不覆盖。流程版本也写入运行指纹；旧5阶段结果不会被当作新7阶段的完整结果。端点判据由−20收紧到0时流程版本也已更新；旧宽松判据的运行目录会被拒绝复用，防止已完成记录绕过严格验收。正式运行使用新的output目录。改变科学参数或几何时必须用新的output根目录，避免混用历史结果。每shard使用进程锁，同一份清单不能被两个进程同时计算；8个不同shard可独立并行。
 
 成功阶段删除逐步GPU SCF检查点以减少磁盘量，保留Gaussian最终chk/fchk、接受结构和全部日志/参数记录；失败阶段保留诊断文件，但删除core dump。每阶段调用已有runner并单独启动worker，阶段内几何步继续复用成功密度；阶段之间目前不复用worker或密度。短任务有重复启动开销，但隔离和恢复边界明确。
 

@@ -6,7 +6,7 @@ Gaussian每次给出结构，常驻GPU worker完成SCF并按需返回梯度/Hess
 
 ## QMER批量反应（本分支）
 
-新增 `qmer-gau prepare/run`，读取combined HDF5的TS，按8份清单分块执行TSOPT→单虚频检查→双向IRC→两端OPT→两端FREQ，默认每卡最多4个反应并行并自动补位，禁用并清理core dump，并支持阶段断点续算与显式失败重试。主流程和接口沿用现有仓库；使用说明、结果判据和续算边界见[批量流程](docs/qmer-batch.md)。安装批量依赖：`python -m pip install -e ".[qmer]"`。
+新增 `qmer-gau prepare/run`，读取combined HDF5的TS，按8份清单分块执行TSOPT→单虚频检查→双向IRC→两端OPT→两端FREQ（端点任何负频均不通过，两端算完再判定），默认每卡最多4个反应并行并自动补位，禁用并清理core dump，并支持阶段断点续算与显式失败重试。主流程和接口沿用现有仓库；使用说明、结果判据和续算边界见[批量流程](docs/qmer-batch.md)。安装批量依赖：`python -m pip install -e ".[qmer]"`。
 
 ## 快速开始：直接运行
 

@@ -28,7 +28,8 @@ from .runner import BOHR, save
 _ACTIVE = set()
 _ACTIVE_LOCK = threading.Lock()
 _CANCEL = threading.Event()
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3
+ENDPOINT_IMAGINARY_THRESHOLD = 0.0
 
 
 def cancel_active():
@@ -228,14 +229,14 @@ def run_reaction(cfg, row, numbers, coords, source_index, meta, control, args):
         for direction in ['reverse','forward']:
             freq=calculate('endpoint_freq_'+direction,'freq',optimized[direction])
             frequencies=json.loads((freq/'summary.json').read_text())['results'][0]['frequencies_cm1']
-            imaginary=[v for v in frequencies if v<args.imaginary_threshold]
-            state['endpoint_validation'][direction]=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=args.imaginary_threshold,imaginary_count=len(imaginary))
+            imaginary=[v for v in frequencies if v<ENDPOINT_IMAGINARY_THRESHOLD]
+            state['endpoint_validation'][direction]=dict(frequencies_cm1=frequencies,imaginary_threshold_cm1=ENDPOINT_IMAGINARY_THRESHOLD,imaginary_count=len(imaginary))
             save(path,state)
         if any(not v['frequencies_cm1'] or v['imaginary_count'] for v in state['endpoint_validation'].values()):
-            state.update(status='rejected',reason='Endpoint FREQ has significant imaginary frequencies or no frequencies')
+            state.update(status='rejected',reason='Endpoint FREQ has negative frequencies (<0 cm^-1) or no frequencies')
             save(path,state);return 'rejected'
         state.pop('reason',None)
-        state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, bidirectional IRC, converged endpoint OPTs with no significant imaginary frequencies; reference R/P identity not verified')
+        state.update(status='complete',completed=time.time(),scope='Single-imaginary TS, bidirectional IRC, converged endpoint OPTs with no negative frequencies; reference R/P identity not verified')
         save(path,state);return 'complete'
     except (KeyboardInterrupt,SystemExit):raise
     except Exception as exc:
@@ -278,7 +279,7 @@ def run(args):
         for shard in sorted(shards):
             manifest=manifests/meta['manifests'][shard]
             if hashlib.sha256(manifest.read_bytes()).hexdigest()!=meta['manifest_sha256'][manifest.name]:raise ValueError('Manifest changed')
-            settings=dict(dataset=meta,config=cfg,imaginary_threshold=args.imaginary_threshold,shard=shard,pipeline_version=PIPELINE_VERSION)
+            settings=dict(dataset=meta,config=cfg,imaginary_threshold=args.imaginary_threshold,endpoint_imaginary_threshold=ENDPOINT_IMAGINARY_THRESHOLD,shard=shard,pipeline_version=PIPELINE_VERSION)
             signature=digest(settings);control=root/f'shard_{shard:02d}';control.mkdir(exist_ok=True)
             lock=stack.enter_context((control/'run.lock').open('a'));fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             metadata=control/'run.json'

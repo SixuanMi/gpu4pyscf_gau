@@ -60,7 +60,7 @@ class QmerTests(unittest.TestCase):
                 out=reaction/name;(out/task).mkdir(parents=True)
                 (out/task/'final.xyz').write_text(Path(xyz).read_text())
                 if task=='freq':
-                    (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=([-100,100,200] if name=="ts_freq" else [100,200,300]))])))
+                    (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=([-100,100,200] if name=="ts_freq" else [0.0,200,300]))])))
                 if task=='irc':
                     def scalar(label,n):return f'{label:<42} I {n}\n'
                     def array(label,v):return f'{label:<42} R N= {len(v)}\n'+' '.join(map(str,v))+'\n'
@@ -72,11 +72,21 @@ class QmerTests(unittest.TestCase):
                     ['tsopt','ts_freq','irc','endpoint_opt_reverse','endpoint_opt_forward','endpoint_freq_reverse','endpoint_freq_forward'])
                 self.assertEqual(run(args),0)
                 self.assertEqual(mock.call_count,7)
+                metadata=r/'results/shard_00/run.json'
+                legacy=json.loads(metadata.read_text())
+                legacy['settings']['pipeline_version']=2
+                legacy['settings'].pop('endpoint_imaginary_threshold')
+                legacy['fingerprint']=digest(legacy['settings'])
+                metadata.write_text(json.dumps(legacy))
+                with self.assertRaisesRegex(ValueError,'Run settings changed'):run(args)
+                self.assertEqual(mock.call_count,7)
             state=json.loads(next((r/'results').rglob('state.json')).read_text())
             self.assertEqual(state['status'],'complete')
             self.assertEqual(state['ts_validation']['imaginary_count'],1)
             self.assertEqual(state['endpoint_validation']['reverse']['imaginary_count'],0)
             self.assertEqual(state['endpoint_validation']['forward']['imaginary_count'],0)
+            self.assertEqual(state['endpoint_validation']['reverse']['imaginary_threshold_cm1'],0.0)
+            self.assertEqual(state['endpoint_validation']['forward']['imaginary_threshold_cm1'],0.0)
             args.indices=[1]
             with self.assertRaises(ValueError):run(args)
 
@@ -115,7 +125,7 @@ class QmerTests(unittest.TestCase):
             self.assertTrue((inside/'core_model.json').exists())
             self.assertTrue((inside/'gaussian.chk').exists())
 
-    def test_endpoint_imaginary_frequency_rejects_after_both_freqs(self):
+    def test_endpoint_soft_negative_frequency_rejects_after_both_freqs(self):
         with tempfile.TemporaryDirectory() as tmp:
             r=Path(tmp);self.dataset(r/'data.h5');prepare(r/'data.h5',r/'manifests',8,2)
             (r/'config.json').write_text('{}')
@@ -126,7 +136,7 @@ class QmerTests(unittest.TestCase):
                 out=reaction/name;(out/task).mkdir(parents=True)
                 (out/task/'final.xyz').write_text(Path(xyz).read_text())
                 if task=='freq':
-                    values=[-100,100,200] if name in ['ts_freq','endpoint_freq_reverse'] else [100,200,300]
+                    values=[-100,100,200] if name=='ts_freq' else ([-0.0001,100,200] if name=='endpoint_freq_reverse' else [0.0,200,300])
                     (out/'summary.json').write_text(json.dumps(dict(results=[dict(frequencies_cm1=values)])))
                 return out
             def fake_endpoints(fchk,numbers,reaction):
@@ -138,6 +148,8 @@ class QmerTests(unittest.TestCase):
             self.assertEqual(state['status'],'rejected')
             self.assertEqual(state['endpoint_validation']['reverse']['imaginary_count'],1)
             self.assertEqual(state['endpoint_validation']['forward']['imaginary_count'],0)
+            self.assertEqual(state['endpoint_validation']['reverse']['imaginary_threshold_cm1'],0.0)
+            self.assertEqual(state['endpoint_validation']['forward']['imaginary_threshold_cm1'],0.0)
 
     def test_signed_endpoints_from_accepted_fchk(self):
         with tempfile.TemporaryDirectory() as tmp:
